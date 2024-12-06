@@ -7,12 +7,15 @@ import shap
 from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.metrics import root_mean_squared_error
 from xgboost import XGBRegressor
-from GeoConformal import GeoConformalSpatialPrediction
-from GeoConformal.geocp import GeoConformalResults
-import geoplot as gplt
-import geoplot.crs as gcrs
 from joblib import Parallel, delayed
 from tqdm import tqdm
+import geoplot as gplt
+import geoplot.crs as gcrs
+import contextily as cx
+from math import ceil
+from pygam import LinearGAM, s
+from GeoConformal import GeoConformalSpatialPrediction
+from GeoConformal.geocp import GeoConformalResults
 
 
 class GeoConformalizedExplainer:
@@ -111,6 +114,7 @@ class GeoConformalizedExplainer:
 
 class GeoConformalizedExplainerResults:
     def __init__(self, explanation: shap.Explanation, geocp_results: List[GeoConformalResults], regression_scores: np.ndarray, regression_rmse: np.ndarray, coords: np.ndarray, feature_values: np.ndarray, crs: str = 'EPSG:4326'):
+        self.explanation = explanation
         self.explanation_values = explanation.values
         self.feature_names = explanation.feature_names
         self.geocp_results = geocp_results
@@ -120,9 +124,14 @@ class GeoConformalizedExplainerResults:
         self.crs = crs
         self.feature_values = feature_values
         self.result = self._get_shap_values_with_uncertainty()
+        self.result_geo = self.to_gdf()
 
     def _get_shap_values_with_uncertainty(self) -> pd.DataFrame:
-        df = pd.DataFrame(self.explanation_values, columns=self.feature_names)
+        feature_shap_names = list(map(lambda s: f'{s}_shap', self.feature_names))
+        feature_value_names = list(map(lambda s: f'{s}_value', self.feature_names))
+        df_shap = pd.DataFrame(self.explanation_values, columns=feature_shap_names)
+        df_value = pd.DataFrame(self.feature_values, columns=feature_value_names)
+        df = pd.concat([df_shap, df_value], axis=1)
         for i in range(len(self.feature_names)):
             feature_name = self.feature_names[i]
             geocp_result = self.geocp_results[i]
@@ -132,11 +141,29 @@ class GeoConformalizedExplainerResults:
             df[f'{feature_name}_lower_bound'] = geocp_result.lower_bound
             df[f'{feature_name}_coverage_probability'] = geocp_result.coverage_probability
             df[f'{feature_name}_pred'] = geocp_result.pred
+            df[f'{feature_name}_value'] = self.feature_values[:, i]
         df['x'] = self.coords[:, 0]
         df['y'] = self.coords[:, 1]
         return df
 
-    def plot_absolute_shap_value_with_uncertainty(self):
+    def to_gdf(self) -> gpd.GeoDataFrame:
+        gdf = gpd.GeoDataFrame(self.result, crs=self.crs,
+                                               geometry=gpd.points_from_xy(x=self.result.x,
+                                                                           y=self.result.y))
+        return gdf
+
+    def accuracy_summary(self) -> pd.DataFrame:
+        coverage_proba_list = []
+        for name in self.feature_names:
+            coverage_name = f'{name}_coverage_probability'
+            coverage_proba = self.result[coverage_name][0]
+            coverage_proba_list.append(coverage_proba)
+        coverage_proba_list = np.array(coverage_proba_list).reshape(-1, 1)
+        df = pd.DataFrame(np.hstack((coverage_proba_list, self.regression_scores.reshape(-1, 1), self.regression_rmse.reshape(-1, 1))), columns=['coverage_probability', 'R2', 'RMSE'])
+        df.index = self.feature_names
+        return df
+
+    def plot_absolute_shap_value_with_uncertainty(self, filename: str = None):
         plt.rcParams['font.size'] = 12
         mean_abs_importance = np.mean(np.abs(self.explanation_values), axis=0)
         index = np.argsort(mean_abs_importance)
@@ -155,6 +182,8 @@ class GeoConformalizedExplainerResults:
         axes[0].set(yticks=np.arange(len(sorted_feature_names)), yticklabels=sorted_feature_names)
         axes[0].yaxis.tick_right()
         fig.tight_layout()
+        if filename:
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.show()
 
     def plot_shap_values_with_uncertainty(self, i: int, filename: str = None):
@@ -162,7 +191,7 @@ class GeoConformalizedExplainerResults:
         fig, ax = plt.subplots(figsize=(10, 10))
         result_i = self.result.iloc[i]
         feature_values_i = self.feature_values[i, :]
-        shap_values_i = result_i[self.feature_names]
+        shap_values_i = self.explanation_values[i, :]
         lower_bound_list = []
         upper_bound_list = []
         for feature_name in self.feature_names:
@@ -201,20 +230,98 @@ class GeoConformalizedExplainerResults:
             plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.show()
 
-    def to_gdf(self) -> gpd.GeoDataFrame:
-        gdf = gpd.GeoDataFrame(self.result, crs=self.crs,
-                                               geometry=gpd.points_from_xy(x=self.result.x,
-                                                                           y=self.result.y))
-        return gdf
+    def plot_geo_uncertainty(self, max_cols: int = 5, figsize: List[int] = None, crs: Any = gcrs.WebMercator(), filename: str = None):
+        k = len(self.feature_names)
+        n_cols = min(k, max_cols)
+        n_rows = ceil(k / n_cols)
 
-    def accuracy_summary(self) -> pd.DataFrame:
-        coverage_proba_list = []
-        for name in self.feature_names:
-            coverage_name = f'{name}_coverage_probability'
-            coverage_proba = self.result[coverage_name][0]
-            coverage_proba_list.append(coverage_proba)
-        coverage_proba_list = np.array(coverage_proba_list).reshape(-1, 1)
-        df = pd.DataFrame(np.hstack((coverage_proba_list, self.regression_scores.reshape(-1, 1), self.regression_rmse.reshape(-1, 1))), columns=['coverage_probability', 'R2', 'RMSE'])
-        df.index = self.feature_names
-        return df
+        fig, axes = plt.subplots(ncols=n_cols, nrows=n_rows, figsize=figsize, subplot_kw={'projection': crs})
+        for i in range(len(self.feature_names)):
+            row = int(i // n_cols)
+            col = i - row * n_cols
+            ax = axes[row][col]
+
+            name = self.feature_names[i]
+
+            ax.set_title(name)
+
+            gplt.webmap(self.result_geo, projection=crs, provider=cx.providers.CartoDB.Voyager, ax=ax)
+
+            ax.set_axis_on()
+
+            gplt.pointplot(self.result_geo, hue=f'{name}_geo_uncertainty', cmap='Reds', legend=True,
+                           legend_kwargs={'shrink': 1}, ax=ax)
+            plt.tight_layout()
+            if filename:
+                plt.savefig(filename, dpi=300, bbox_inches='tight')
+            plt.show()
+
+    def plot_partial_dependence_with_fitted_bounds(self, max_cols: int = 5, figsize: List[int] = None, n_splines: int = 50, filename: str = None):
+        k = len(self.feature_names)
+        n_cols = min(k, max_cols)
+        n_rows = ceil(k / n_cols)
+
+        fig, axes = plt.subplots(ncols=n_cols, nrows=n_rows, figsize=figsize)
+
+        for i in range(len(self.feature_names)):
+            row = int(i // n_cols)
+            col = i - row * n_cols
+            ax = axes[row][col]
+            name = self.feature_names[i]
+            shap_values = self.result[f'{name}_shap'].values
+            feature_values = self.result[f'{name}_value'].values
+            lower_bounds = self.result[f'{name}_lower_bound'].values
+            upper_bounds = self.result[f'{name}_upper_bound'].values
+            lam = np.logspace(2, 7, 5).reshape(-1, 1)
+            upper_gam = LinearGAM(n_splines=n_splines, fit_intercept=False).gridsearch(feature_values.reshape(-1, 1),
+                                                                              upper_bounds.reshape(-1, 1), lam=lam)
+            lower_gam = LinearGAM(n_splines=n_splines, fit_intercept=False).gridsearch(feature_values.reshape(-1, 1),
+                                                                              lower_bounds.reshape(-1, 1), lam=lam)
+            ax.fill_between(x, y_pred_upper, y_pred_lower, color='#3594cc', alpha=0.5)
+            x = np.linspace(feature_values.min(), feature_values.max(), 250)
+            y_pred_lower = upper_gam.predict(x)
+            y_pred_upper = lower_gam.predict(x)
+            ax.scatter(feature_values, shap_values, s=5, c='#d8a6a6')
+            # ax.scatter(feature_values, upper_bounds, s=5, c='#3594cc')
+            ax.set_ylabel(f'Shapley Value - {name}')
+            ax.set_xlabel(f'Feature Value - {name}')
+        plt.tight_layout()
+
+        if filename:
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.show()
+
+    def plot_partial_plot_with_individual_intervals(self, max_cols: int = 5, figsize: List[int] = None, filename: str = None):
+        k = len(self.feature_names)
+        n_cols = min(k, max_cols)
+        n_rows = ceil(k / n_cols)
+
+        fig, axes = plt.subplots(ncols=n_cols, nrows=n_rows, figsize=figsize)
+
+        for i in range(len(self.feature_names)):
+            row = int(i // n_cols)
+            col = i - row * n_cols
+            ax = axes[row][col]
+            name = self.feature_names[i]
+            shap_values = self.result[f'{name}_shap'].values
+            feature_values = self.result[f'{name}_value'].values
+            lower_bounds = self.result[f'{name}_lower_bound'].values
+            upper_bounds = self.result[f'{name}_upper_bound'].values
+            pred_values = self.result[f'{name}_pred'].values
+            ax.scatter(feature_values, pred_values, s=2, c='#8cc5e3', zorder=1)
+            for x, low, high in zip(feature_values, lower_bounds, upper_bounds):
+                ax.plot([x, x], [low, high], color='#3594cc', linewidth=0.8, solid_capstyle='butt', zorder=1)
+            ax.scatter(feature_values, shap_values, s=2, c='#d8a6a6', zorder=10)
+            ax.set_ylabel(f'Shapley Value - {name}')
+            ax.set_xlabel(f'Feature Value - {name}')
+        plt.tight_layout()
+
+        if filename:
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+
+        plt.show()
+
+
+
+
 
