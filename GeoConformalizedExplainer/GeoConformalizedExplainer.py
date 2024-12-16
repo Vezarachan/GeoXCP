@@ -58,7 +58,7 @@ class GeoConformalizedExplainer:
                                  param_grid=params,
                                  verbose=0,
                                  return_train_score=False,
-                                 n_jobs=1,
+                                 n_jobs=4,
                                  cv=kf)
         t = t.reshape(-1, 1)
         x_new = np.hstack((x, t))
@@ -152,6 +152,18 @@ class GeoConformalizedExplainerResults:
                                                                            y=self.result.y))
         return gdf
 
+    def _shap_var(self) -> np.ndarray:
+        return np.var(self.explanation_values, axis=0)
+
+    def _predicted_shap_var(self) -> np.ndarray:
+        predicted_shap_var_list = []
+        for i in range(len(self.geocp_results)):
+            geocp_results = self.geocp_results[i]
+            predicted_shap_var = np.var(geocp_results.pred)
+            predicted_shap_var_list.append(predicted_shap_var)
+        return np.array(predicted_shap_var_list)
+
+
     def accuracy_summary(self) -> pd.DataFrame:
         coverage_proba_list = []
         for name in self.feature_names:
@@ -159,7 +171,13 @@ class GeoConformalizedExplainerResults:
             coverage_proba = self.result[coverage_name][0]
             coverage_proba_list.append(coverage_proba)
         coverage_proba_list = np.array(coverage_proba_list).reshape(-1, 1)
-        df = pd.DataFrame(np.hstack((coverage_proba_list, self.regression_scores.reshape(-1, 1), self.regression_rmse.reshape(-1, 1))), columns=['coverage_probability', 'R2', 'RMSE'])
+        shap_var = self._shap_var()
+        pred_shap_var = self._predicted_shap_var()
+        df = pd.DataFrame(np.hstack((coverage_proba_list,
+                                     self.regression_scores.reshape(-1, 1),
+                                     self.regression_rmse.reshape(-1, 1),
+                                     shap_var.reshape(-1, 1),
+                                     pred_shap_var.reshape(-1, 1))), columns=['coverage_probability', 'R2', 'RMSE', 'SHAP_Var', 'Pred_SHAP_Var'])
         df.index = self.feature_names
         return df
 
@@ -214,10 +232,12 @@ class GeoConformalizedExplainerResults:
                 weight='bold'
             )
 
+        num_feature_names = len(self.feature_names)
+        width = (num_feature_names / 10) * 0.06
         for y, x, low, high in zip(y_positions, shap_values_i, lower_bound_list, upper_bound_list):
-            ax.plot([low, high], [y, y], color='#454545', linewidth=1.5, solid_capstyle='butt', zorder=1)
-            ax.plot([low, low], [y - 0.06, y + 0.06], color='#454545', linewidth=1.5, solid_capstyle='butt', zorder=1)
-            ax.plot([high, high], [y - 0.06, y + 0.06], color='#454545', linewidth=1.5, solid_capstyle='butt', zorder=1)
+            ax.plot([low, high], [y, y], color='#454545', linewidth=2, solid_capstyle='butt', zorder=1)
+            ax.plot([low, low], [y - width, y + width], color='#454545', linewidth=2, solid_capstyle='butt', zorder=1)
+            ax.plot([high, high], [y - width, y + width], color='#454545', linewidth=2, solid_capstyle='butt', zorder=1)
         plt.xlabel('Importance')
 
         y_ticks = []
@@ -230,10 +250,13 @@ class GeoConformalizedExplainerResults:
             plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.show()
 
-    def plot_geo_uncertainty(self, max_cols: int = 5, figsize: List[int] = None, crs: Any = gcrs.WebMercator(), filename: str = None):
+    def plot_geo_uncertainty(self, max_cols: int = 5, figsize: List[int] = None, crs: Any = gcrs.WebMercator(), filename: str = None, shrink: float = 0.8):
         k = len(self.feature_names)
         n_cols = min(k, max_cols)
         n_rows = ceil(k / n_cols)
+
+        if figsize is None:
+            figsize = [30, n_rows * 5]
 
         fig, axes = plt.subplots(ncols=n_cols, nrows=n_rows, figsize=figsize, subplot_kw={'projection': crs})
         for i in range(len(self.feature_names)):
@@ -250,16 +273,23 @@ class GeoConformalizedExplainerResults:
             ax.set_axis_on()
 
             gplt.pointplot(self.result_geo, hue=f'{name}_geo_uncertainty', cmap='Reds', legend=True,
-                           legend_kwargs={'shrink': 1}, ax=ax)
+                           legend_kwargs={'shrink': shrink}, ax=ax)
             plt.tight_layout()
-            if filename:
-                plt.savefig(filename, dpi=300, bbox_inches='tight')
-            plt.show()
+
+        for ax in axes.flat:
+            if not ax.has_data():  # Check if the subplot contains data
+                fig.delaxes(ax)
+        if filename:
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.show()
 
     def plot_partial_dependence_with_fitted_bounds(self, max_cols: int = 5, figsize: List[int] = None, n_splines: int = 50, filename: str = None):
         k = len(self.feature_names)
         n_cols = min(k, max_cols)
         n_rows = ceil(k / n_cols)
+
+        if figsize is None:
+            figsize = [30, n_rows * 5]
 
         fig, axes = plt.subplots(ncols=n_cols, nrows=n_rows, figsize=figsize)
 
@@ -277,10 +307,10 @@ class GeoConformalizedExplainerResults:
                                                                               upper_bounds.reshape(-1, 1), lam=lam)
             lower_gam = LinearGAM(n_splines=n_splines, fit_intercept=False).gridsearch(feature_values.reshape(-1, 1),
                                                                               lower_bounds.reshape(-1, 1), lam=lam)
-            ax.fill_between(x, y_pred_upper, y_pred_lower, color='#3594cc', alpha=0.5)
             x = np.linspace(feature_values.min(), feature_values.max(), 250)
             y_pred_lower = upper_gam.predict(x)
             y_pred_upper = lower_gam.predict(x)
+            ax.fill_between(x, y_pred_upper, y_pred_lower, color='#3594cc', alpha=0.5)
             ax.scatter(feature_values, shap_values, s=5, c='#d8a6a6')
             # ax.scatter(feature_values, upper_bounds, s=5, c='#3594cc')
             ax.set_ylabel(f'Shapley Value - {name}')
