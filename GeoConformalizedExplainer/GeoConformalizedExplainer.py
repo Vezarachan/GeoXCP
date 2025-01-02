@@ -315,6 +315,10 @@ class GeoConformalizedExplainerResults:
             # ax.scatter(feature_values, upper_bounds, s=5, c='#3594cc')
             ax.set_ylabel(f'Shapley Value - {name}')
             ax.set_xlabel(f'Feature Value - {name}')
+        for ax in axes.flat:
+            if not ax.has_data():  # Check if the subplot contains data
+                fig.delaxes(ax)
+
         plt.tight_layout()
 
         if filename:
@@ -325,6 +329,9 @@ class GeoConformalizedExplainerResults:
         k = len(self.feature_names)
         n_cols = min(k, max_cols)
         n_rows = ceil(k / n_cols)
+
+        if figsize is None:
+            figsize = [30, n_rows * 5]
 
         fig, axes = plt.subplots(ncols=n_cols, nrows=n_rows, figsize=figsize)
 
@@ -344,6 +351,11 @@ class GeoConformalizedExplainerResults:
             ax.scatter(feature_values, shap_values, s=2, c='#d8a6a6', zorder=10)
             ax.set_ylabel(f'Shapley Value - {name}')
             ax.set_xlabel(f'Feature Value - {name}')
+
+        for ax in axes.flat:
+            if not ax.has_data():  # Check if the subplot contains data
+                fig.delaxes(ax)
+
         plt.tight_layout()
 
         if filename:
