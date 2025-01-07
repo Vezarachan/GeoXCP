@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import geopandas as gpd
+import math
 import shap
 from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.metrics import root_mean_squared_error
@@ -204,6 +205,14 @@ class GeoConformalizedExplainerResults:
             plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.show()
 
+    def _format_number_based_on_magnitude(self, num) -> str:
+        if num == 0:
+            return "0"
+        magnitude = math.floor(math.log10(abs(num)))  # 计算数量级
+        decimal_places = max(0, 2 - magnitude)  # 根据数量级动态确定小数点位数
+        formatted_number = f"{num:.{decimal_places}f}"  # 动态格式化
+        return formatted_number
+
     def plot_shap_values_with_uncertainty(self, i: int, filename: str = None):
         plt.rcParams['font.size'] = 12
         fig, ax = plt.subplots(figsize=(10, 10))
@@ -216,7 +225,7 @@ class GeoConformalizedExplainerResults:
             lower_bound_list.append(result_i[f'{feature_name}_lower_bound'])
             upper_bound_list.append(result_i[f'{feature_name}_upper_bound'])
         colors = ['#ff0d57' if e >= 0 else '#1e88e5' for e in shap_values_i]
-        labels = [f'+{e:.2f}' if e >= 0 else f'{e:.2f}' for e in shap_values_i]
+        labels = [f'+{self._format_number_based_on_magnitude(e)}' if e >= 0 else f'{self._format_number_based_on_magnitude(e)}' for e in shap_values_i]
 
         bars = ax.barh(self.feature_names, shap_values_i, color=colors)
         y_positions = np.arange(len(self.feature_names))
@@ -225,7 +234,7 @@ class GeoConformalizedExplainerResults:
             width = bar.get_width()
             ax.annotate(
                 label,
-                xy=(width, bar.get_y() + bar.get_height() / 2),  # Position
+                xy=(width, bar.get_y() + bar.get_height() / 3),  # Position
                 xytext=(0, 15),  # Offset (x, y) in points
                 textcoords="offset points",  # Relative positioning
                 ha='left', va='center',  # Horizontal and vertical alignment
