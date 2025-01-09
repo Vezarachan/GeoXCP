@@ -38,7 +38,7 @@ class GeoConformalizedExplainer:
         :param x:
         :return:
         """
-        explainer = shap.Explainer(model=self.model)
+        explainer = shap.Explainer(self.model.predict, x, algorithm='permutation')
         explanation_values = explainer(x)
         return explanation_values
 
