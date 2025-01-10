@@ -259,7 +259,7 @@ class GeoConformalizedExplainerResults:
             plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.show()
 
-    def plot_geo_uncertainty(self, max_cols: int = 5, figsize: List[int] = None, crs: Any = gcrs.WebMercator(), filename: str = None, shrink: float = 0.8):
+    def plot_geo_uncertainty(self, max_cols: int = 5, figsize: List[int] = None, crs: Any = gcrs.WebMercator(), filename: str = None, shrink: float = 0.8, basemap: bool = True):
         k = len(self.feature_names)
         n_cols = min(k, max_cols)
         n_rows = ceil(k / n_cols)
@@ -277,7 +277,8 @@ class GeoConformalizedExplainerResults:
 
             ax.set_title(name)
 
-            gplt.webmap(self.result_geo, projection=crs, provider=cx.providers.CartoDB.Voyager, ax=ax)
+            if basemap:
+                gplt.webmap(self.result_geo, projection=crs, provider=cx.providers.CartoDB.Voyager, ax=ax)
 
             ax.set_axis_on()
 
@@ -291,6 +292,8 @@ class GeoConformalizedExplainerResults:
         if filename:
             plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.show()
+
+
 
     def plot_partial_dependence_with_fitted_bounds(self, max_cols: int = 5, figsize: List[int] = None, n_splines: int = 50, filename: str = None):
         k = len(self.feature_names)
