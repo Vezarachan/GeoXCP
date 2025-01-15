@@ -122,8 +122,8 @@ class GeoConformalSpatialPrediction:
         """
         if weights is None:
             weights = np.ones(len(scores))
-        print(weights.shape)
-        print(scores.shape)
+        # print(weights.shape)
+        # print(scores.shape)
 
         sorted_indices = np.argsort(scores)
         scores_sorted = scores[sorted_indices]
