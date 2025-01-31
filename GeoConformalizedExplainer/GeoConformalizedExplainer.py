@@ -9,7 +9,9 @@ from shap import Explanation
 from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.metrics import root_mean_squared_error, r2_score
 from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
+from sklearn.multioutput import MultiOutputRegressor
+from sklearn.impute import SimpleImputer
 from xgboost import XGBRegressor
 from joblib import Parallel, delayed
 from tqdm import tqdm
@@ -20,6 +22,7 @@ from math import ceil
 from pygam import LinearGAM, s
 from GeoConformal import GeoConformalSpatialPrediction
 from GeoConformal.geocp import GeoConformalResults
+
 
 class GeoConformalizedExplainerResults:
     def __init__(self, explanation: Explanation, geocp_results: List[GeoConformalResults], regression_r2: np.ndarray, regression_rmse: np.ndarray, coords: np.ndarray, feature_values: np.ndarray, crs: str = 'EPSG:4326'):
@@ -134,28 +137,33 @@ class GeoConformalizedExplainerResults:
             lower_bound_list.append(result_i[f'{feature_name}_lower_bound'])
             upper_bound_list.append(result_i[f'{feature_name}_upper_bound'])
         colors = ['#ff0d57' if e >= 0 else '#1e88e5' for e in shap_values_i]
-        labels = [f'+{self._format_number_based_on_magnitude(e)}' if e >= 0 else f'{self._format_number_based_on_magnitude(e)}' for e in shap_values_i]
+        # labels = [f'+{self._format_number_based_on_magnitude(e)}' if e >= 0 else f'{self._format_number_based_on_magnitude(e)}' for e in shap_values_i]
 
         bars = ax.barh(self.feature_names, shap_values_i, color=colors)
         y_positions = np.arange(len(self.feature_names))
 
-        for bar, label in zip(bars, labels):
-            width = bar.get_width()
+        for i, (bar, value) in enumerate(zip(bars, shap_values_i)):
+            offset = -10 if value < 0 else 1
+            label = f'+{self._format_number_based_on_magnitude(value)}' if value >= 0 else f'{self._format_number_based_on_magnitude(value)}'
+            color = '#ff0d57' if value >= 0 else '#1e88e5'
             ax.annotate(
                 label,
-                xy=(width, bar.get_y() + bar.get_height() / 3),  # Position
-                xytext=(0, 15),  # Offset (x, y) in points
+                xy=(value, i + bar.get_height() / 3),  # Position
+                xytext=(offset * len(label), 0),  # Offset (x, y) in points
                 textcoords="offset points",  # Relative positioning
-                ha='left', va='center',  # Horizontal and vertical alignment
-                weight='bold'
+                va='center',  # Vertical alignment
+                fontsize=8,
+                color=color
             )
 
         num_feature_names = len(self.feature_names)
-        width = (num_feature_names / 10) * 0.06
+        width = (num_feature_names / 10) * 0.05
         for y, x, low, high in zip(y_positions, shap_values_i, lower_bound_list, upper_bound_list):
-            ax.plot([low, high], [y, y], color='#454545', linewidth=2, solid_capstyle='butt', zorder=1)
-            ax.plot([low, low], [y - width, y + width], color='#454545', linewidth=2, solid_capstyle='butt', zorder=1)
-            ax.plot([high, high], [y - width, y + width], color='#454545', linewidth=2, solid_capstyle='butt', zorder=1)
+            mid = (low + high) / 2
+            ax.plot([low, high], [y, y], color='#454545', linewidth=1.5, solid_capstyle='butt', zorder=1)
+            ax.plot([low, low], [y - width, y + width], color='#454545', linewidth=1.5, solid_capstyle='butt', zorder=1)
+            ax.plot([high, high], [y - width, y + width], color='#454545', linewidth=1.5, solid_capstyle='butt', zorder=1)
+            ax.plot(mid, y, color='#ea801c', marker='o', markersize=6, zorder=2)
         plt.xlabel('Importance')
 
         y_ticks = []
@@ -287,7 +295,9 @@ class GeoConformalizedExplainer:
     Geographically Conformalized Explanations for Black-Box Models
     """
     def __init__(self, model: Any, x_train: np.ndarray, x_calib: np.ndarray, coord_calib: np.ndarray = None,
-                 coord_test: np.ndarray = None, miscoverage_level: float = 0.1, band_width: float = None):
+                 coord_test: np.ndarray = None, miscoverage_level: float = 0.1, band_width: float = None, is_single_model: bool = True):
+        self.scaler = StandardScaler()
+        self.imputer = SimpleImputer(missing_values=np.nan, strategy='mean')
         self.model = model
         self.x_train = x_train
         self.x_calib = x_calib
@@ -297,7 +307,7 @@ class GeoConformalizedExplainer:
         self.coord_test = coord_test
         self.miscoverage_level = miscoverage_level
         self.band_width = band_width
-        self.scaler = StandardScaler()
+        self.is_single_model = is_single_model
 
     def _compute_explanation_values(self, x: np.ndarray) -> Explanation:
         """
@@ -306,7 +316,7 @@ class GeoConformalizedExplainer:
         :return:
         """
         explainer = shap.Explainer(self.model.predict, x, algorithm='auto')
-        explanation_values = explainer(x)
+        explanation_values = explainer(x).values
         return explanation_values
 
     def _fit_explanation_value_predictor(self, x: np.ndarray, t: np.ndarray, s: np.ndarray) -> XGBRegressor:
@@ -346,18 +356,19 @@ class GeoConformalizedExplainer:
         :param s:
         :return:
         """
-        model = MLPRegressor(hidden_layer_sizes=(100, 100),
+        model = MLPRegressor(hidden_layer_sizes=(1024, 1024, 2048),
                              random_state=42,
                              max_iter=2000,
                              activation='relu',
-                             solver='sgd',
+                             solver='adam',
                              verbose=False,
                              learning_rate='adaptive',
-                             warm_start=True,
-                             early_stopping=True)
+                             early_stopping=True,
+                             alpha=0.01)
         t = t.reshape(-1, 1)
         x_new = np.hstack((x, t))
         x_new = self.scaler.fit_transform(x_new)
+        x_new = self.imputer.fit_transform(x_new)
         model.fit(x_new, s)
         return model
 
@@ -435,19 +446,26 @@ class GeoConformalizedExplainer:
         :return:
         """
         t_train = self.model.predict(self.x_train)
+        print('Training SHAP')
         shap_train = self._compute_explanation_values(self.x_train)
         s_train = shap_train.values
         t_calib = self.model.predict(self.x_calib).reshape(-1, 1)
+        print('Calibrating SHAP')
         shap_calib = self._compute_explanation_values(self.x_calib)
         s_calib = shap_calib.values
         x_calib_new = np.hstack((self.x_calib, t_calib))
+        print('Testing SHAP')
         shap_test = self._compute_explanation_values(x_test)
         s_test = shap_test.values
         t_test = self.model.predict(x_test).reshape(-1, 1)
         x_test_new = np.hstack((x_test, t_test))
-        # Parallelize the regressor fitting and conformal prediction of all variables
-        # results = Parallel(n_jobs=n_jobs)(delayed(self._explain_ith_variable)(i, s_train, t_train, x_test_new, s_test, x_calib_new, s_calib) for i in tqdm(range(self.num_variables)))
-        results = self._explain_variables_in_single_model(s_train, t_train, x_test_new, s_test, x_calib_new, s_calib)
+        print('Explaining Variables')
+        if self.is_single_model:
+            results = self._explain_variables_in_single_model(s_train, t_train, x_test_new, s_test, x_calib_new, s_calib)
+        else:
+            results = Parallel(n_jobs=n_jobs)(
+                delayed(self._explain_ith_variable)(i, s_train, t_train, x_test_new, s_test, x_calib_new, s_calib) for i
+                in tqdm(range(self.num_variables)))
         geocp_results = [result[0] for result in results]
         r2 = np.array([result[1] for result in results])
         rmse = np.array([result[2] for result in results])
