@@ -1,4 +1,4 @@
-from typing import Callable, Any, List, Tuple
+from typing import Callable, Any, List, Tuple, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -25,10 +25,16 @@ from GeoConformal.geocp import GeoConformalResults
 
 
 class GeoConformalizedExplainerResults:
-    def __init__(self, explanation: Explanation, geocp_results: List[GeoConformalResults], regression_r2: np.ndarray, regression_rmse: np.ndarray, coords: np.ndarray, feature_values: np.ndarray, crs: str = 'EPSG:4326'):
-        self.explanation = explanation
-        self.explanation_values = explanation.values
-        self.feature_names = explanation.feature_names
+    def __init__(self, explanation: np.ndarray,
+                 geocp_results: List[GeoConformalResults],
+                 regression_r2: np.ndarray,
+                 regression_rmse: np.ndarray,
+                 coords: np.ndarray,
+                 feature_values: np.ndarray,
+                 feature_names: List[str],
+                 crs: str = 'EPSG:4326'):
+        self.explanation_values = explanation
+        self.feature_names = feature_names
         self.geocp_results = geocp_results
         self.coords = coords
         self.regression_r2 = regression_r2
@@ -37,7 +43,7 @@ class GeoConformalizedExplainerResults:
         self.feature_values = feature_values
         self.result = self._get_shap_values_with_uncertainty()
         self.result_geo = self.to_gdf()
-        self.k = len(self.feature_names)
+        self.K = len(self.feature_names)
 
     def _get_shap_values_with_uncertainty(self) -> pd.DataFrame:
         feature_shap_names = list(map(lambda s: f'{s}_shap', self.feature_names))
@@ -54,7 +60,7 @@ class GeoConformalizedExplainerResults:
             df[f'{feature_name}_lower_bound'] = geocp_result.lower_bound
             df[f'{feature_name}_coverage_probability'] = geocp_result.coverage_probability
             df[f'{feature_name}_pred'] = geocp_result.pred
-            df[f'{feature_name}_value'] = self.feature_values[:, i]
+            df[f'{feature_name}_shap_abs'] = np.abs(df[f'{feature_name}_shap'])
         df['x'] = self.coords[:, 0]
         df['y'] = self.coords[:, 1]
         return df
@@ -75,6 +81,28 @@ class GeoConformalizedExplainerResults:
             predicted_shap_var = np.var(geocp_results.pred)
             predicted_shap_var_list.append(predicted_shap_var)
         return np.array(predicted_shap_var_list)
+
+    def get_svc(self, cols: List, coef_type: str = 'gwr', bw_min: int = 5, bw_max: int = 50, include_geo_effects: bool = True):
+        N, _ = self.feature_values.shape
+        params = np.zeros((N, self.K))
+        for k in range(self.K):
+            params[:, k] = self.geocp_results[k].pred
+
+        for i in cols:
+            if coef_type == 'raw':
+                params[:, i] = params[:, i] / (self.feature_values - self.feature_values.mean(axis=0))[:, i]
+            if coef_type == 'gwr':
+                try:
+                    import mgwr
+                except ImportError:
+                    print("Please install mgwr package (e.g., pip install mgwr).")
+                y = params[:, i].reshape(-1, 1)
+                X =(self.feature_values - self.feature_values.mean(axis=0))[:, i].reshape(-1, 1)
+                gwr_selector = mgwr.sel_bw.Sel_BW(self.coords, y, X)
+                gwr_bw = gwr_selector.search(bw_min=bw_min, bw_max=bw_max)
+                gwr_model = mgwr.gwr.GWR(self.coords, y, X, gwr_bw).fit()
+                params[:, i] = gwr_model.params[:, 1]
+        return params[:, cols]
 
 
     def accuracy_summary(self) -> pd.DataFrame:
@@ -176,9 +204,9 @@ class GeoConformalizedExplainerResults:
             plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.show()
 
-    def plot_geo_uncertainty(self, max_cols: int = 5, figsize: List[int] = None, crs: Any = gcrs.WebMercator(), filename: str = None, shrink: float = 0.8, basemap: bool = True):
-        n_cols = min(self.k, max_cols)
-        n_rows = ceil(self.k / n_cols)
+    def plot_geo_uncertainty(self, max_cols: int = 5, figsize: List[int] = None, crs: Any = gcrs.WebMercator(), filename: str = None, shrink: float = 0.8, basemap: bool = True, s_limits: List[int] = (2, 12), cmap: str = 'flare'):
+        n_cols = min(self.K, max_cols)
+        n_rows = ceil(self.K / n_cols)
 
         if figsize is None:
             figsize = [30, n_rows * 5]
@@ -198,7 +226,7 @@ class GeoConformalizedExplainerResults:
 
             ax.set_axis_on()
 
-            gplt.pointplot(self.result_geo, hue=f'{name}_geo_uncertainty', cmap='Reds', legend=True,
+            gplt.pointplot(self.result_geo, legend_var='hue', hue=f'{name}_geo_uncertainty', scale=f'{name}_shap_abs', cmap=cmap, limits=s_limits, legend=True,
                            legend_kwargs={'shrink': shrink}, ax=ax)
             plt.tight_layout()
 
@@ -212,8 +240,8 @@ class GeoConformalizedExplainerResults:
 
 
     def plot_partial_dependence_with_fitted_bounds(self, max_cols: int = 5, figsize: List[int] = None, n_splines: int = 50, filename: str = None):
-        n_cols = min(self.k, max_cols)
-        n_rows = ceil(self.k / n_cols)
+        n_cols = min(self.K, max_cols)
+        n_rows = ceil(self.K / n_cols)
 
         if figsize is None:
             figsize = [30, n_rows * 5]
@@ -253,8 +281,8 @@ class GeoConformalizedExplainerResults:
         plt.show()
 
     def plot_partial_plot_with_individual_intervals(self, max_cols: int = 5, figsize: List[int] = None, filename: str = None):
-        n_cols = min(self.k, max_cols)
-        n_rows = ceil(self.k / n_cols)
+        n_cols = min(self.K, max_cols)
+        n_rows = ceil(self.K / n_cols)
 
         if figsize is None:
             figsize = [30, n_rows * 5]
@@ -294,11 +322,13 @@ class GeoConformalizedExplainer:
     Spatial Explanation under Uncertainty
     Geographically Conformalized Explanations for Black-Box Models
     """
-    def __init__(self, model: Any, x_train: np.ndarray, x_calib: np.ndarray, coord_calib: np.ndarray = None,
-                 coord_test: np.ndarray = None, miscoverage_level: float = 0.1, band_width: float = None, is_single_model: bool = True):
+    def __init__(self, prediction_f: Callable, x_train: Union[np.ndarray, pd.DataFrame], x_calib: Union[np.ndarray, pd.DataFrame],
+                 coord_calib: Union[np.ndarray, pd.DataFrame] = None, coord_test: Union[np.ndarray, pd.DataFrame] = None,
+                 miscoverage_level: float = 0.1, band_width: float = None,
+                 feature_names: Union[List[str], np.ndarray] = None, is_single_model: bool = True):
         self.scaler = StandardScaler()
         self.imputer = SimpleImputer(missing_values=np.nan, strategy='mean')
-        self.model = model
+        self.prediction_f = prediction_f
         self.x_train = x_train
         self.x_calib = x_calib
         _, k = x_calib.shape
@@ -308,6 +338,10 @@ class GeoConformalizedExplainer:
         self.miscoverage_level = miscoverage_level
         self.band_width = band_width
         self.is_single_model = is_single_model
+        if feature_names is None:
+            self.feature_names = [f'X{i}' for i in range(k)]
+        else:
+            self.feature_names = feature_names
 
     def _compute_explanation_values(self, x: np.ndarray) -> Explanation:
         """
@@ -315,9 +349,10 @@ class GeoConformalizedExplainer:
         :param x:
         :return:
         """
-        explainer = shap.Explainer(self.model.predict, x, algorithm='auto')
-        explanation_values = explainer(x).values
-        return explanation_values
+        background = shap.sample(x, 100)
+        explainer = shap.KernelExplainer(self.prediction_f, background, keep_index=True)
+        explanation_result = explainer(x)
+        return explanation_result
 
     def _fit_explanation_value_predictor(self, x: np.ndarray, t: np.ndarray, s: np.ndarray) -> XGBRegressor:
         """
@@ -445,11 +480,11 @@ class GeoConformalizedExplainer:
         :param is_geo:
         :return:
         """
-        t_train = self.model.predict(self.x_train)
+        t_train = self.prediction_f(self.x_train)
         print('Training SHAP')
         shap_train = self._compute_explanation_values(self.x_train)
         s_train = shap_train.values
-        t_calib = self.model.predict(self.x_calib).reshape(-1, 1)
+        t_calib = self.prediction_f(self.x_calib).reshape(-1, 1)
         print('Calibrating SHAP')
         shap_calib = self._compute_explanation_values(self.x_calib)
         s_calib = shap_calib.values
@@ -457,7 +492,7 @@ class GeoConformalizedExplainer:
         print('Testing SHAP')
         shap_test = self._compute_explanation_values(x_test)
         s_test = shap_test.values
-        t_test = self.model.predict(x_test).reshape(-1, 1)
+        t_test = self.prediction_f(x_test).reshape(-1, 1)
         x_test_new = np.hstack((x_test, t_test))
         print('Explaining Variables')
         if self.is_single_model:
@@ -469,7 +504,7 @@ class GeoConformalizedExplainer:
         geocp_results = [result[0] for result in results]
         r2 = np.array([result[1] for result in results])
         rmse = np.array([result[2] for result in results])
-        return GeoConformalizedExplainerResults(explanation=shap_test, geocp_results=geocp_results, regression_r2=r2, regression_rmse=rmse, coords=self.coord_test, feature_values=x_test.values)
+        return GeoConformalizedExplainerResults(explanation=s_test, geocp_results=geocp_results, regression_r2=r2, regression_rmse=rmse, coords=self.coord_test, feature_values=x_test.values, feature_names=self.feature_names)
 
 
 
