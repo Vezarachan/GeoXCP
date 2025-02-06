@@ -355,16 +355,16 @@ class GeoConformalizedExplainer:
         :param x:
         :return:
         """
-        # if self.batch_size is None:
-        #     batch_size = x.shape[0] // 2
-        # else:
-        #     batch_size = self.batch_size
-        # n_background_sets = x.shape[0] // 4
-        # explainer = KernelExplainer(self.prediction_f, x)
-        # explainer.stratify_background_set(n_background_sets)
-        # explanation_result = explainer.calculate_shap_values(x, outer_batch_size=batch_size, inner_batch_size=batch_size, background_fold_to_use=0, verbose=True)[:, :self.num_variables]
-        explainer = shap.Explainer(self.prediction_f, self.x_train, feature_names=self.feature_names, algorithm='auto')
-        explanation_result = explainer(x).values
+        if self.batch_size is None:
+            batch_size = x.shape[0] // 2
+        else:
+            batch_size = self.batch_size
+        n_background_sets = x.shape[0] // 4
+        explainer = KernelExplainer(self.prediction_f, x)
+        explainer.stratify_background_set(n_background_sets)
+        explanation_result = explainer.calculate_shap_values(x, outer_batch_size=batch_size, inner_batch_size=batch_size, background_fold_to_use=0, verbose=True)[:, :self.num_variables]
+        # explainer = shap.Explainer(self.prediction_f, self.x_train, feature_names=self.feature_names, algorithm='auto')
+        # explanation_result = explainer(x).values
         return explanation_result
 
     def _fit_explanation_value_predictor(self, x: np.ndarray, t: np.ndarray, s: np.ndarray) -> XGBRegressor:
@@ -404,7 +404,7 @@ class GeoConformalizedExplainer:
         :param s:
         :return:
         """
-        model = MLPRegressor(hidden_layer_sizes=(4096, 2048, 1204),
+        model = MLPRegressor(hidden_layer_sizes=(2048, 2048, 1204),
                              max_iter=2000,
                              activation='relu',
                              solver='adam',
