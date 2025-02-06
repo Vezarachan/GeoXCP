@@ -9,7 +9,7 @@ from fastshap import KernelExplainer
 from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.metrics import root_mean_squared_error, r2_score
 from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.cluster import KMeans
 from sklearn.impute import SimpleImputer
 from xgboost import XGBRegressor
@@ -326,7 +326,7 @@ class GeoConformalizedExplainer:
                  coord_calib: Union[np.ndarray, pd.DataFrame] = None,
                  miscoverage_level: float = 0.1, band_width: float = None, n_samples: int = 500, batch_size: int = None,
                  feature_names: Union[List[str], np.ndarray] = None, is_single_model: bool = True):
-        self.scaler = StandardScaler()
+        self.scaler = MinMaxScaler()
         self.imputer = SimpleImputer(missing_values=np.nan, strategy='mean')
         self.prediction_f = prediction_f
         _, k = x_calib.shape
@@ -355,13 +355,16 @@ class GeoConformalizedExplainer:
         :param x:
         :return:
         """
-        if self.batch_size is None:
-            batch_size = int(x.shape[0] / 2)
-        else:
-            batch_size = self.batch_size
-        explainer = KernelExplainer(self.prediction_f, x)
-        explainer.stratify_background_set(100)
-        explanation_result = explainer.calculate_shap_values(x, outer_batch_size=batch_size, inner_batch_size=batch_size, background_fold_to_use=0, verbose=True)[:, :self.num_variables]
+        # if self.batch_size is None:
+        #     batch_size = x.shape[0] // 2
+        # else:
+        #     batch_size = self.batch_size
+        # n_background_sets = x.shape[0] // 4
+        # explainer = KernelExplainer(self.prediction_f, x)
+        # explainer.stratify_background_set(n_background_sets)
+        # explanation_result = explainer.calculate_shap_values(x, outer_batch_size=batch_size, inner_batch_size=batch_size, background_fold_to_use=0, verbose=True)[:, :self.num_variables]
+        explainer = shap.Explainer(self.prediction_f, self.x_train, feature_names=self.feature_names, algorithm='auto')
+        explanation_result = explainer(x).values
         return explanation_result
 
     def _fit_explanation_value_predictor(self, x: np.ndarray, t: np.ndarray, s: np.ndarray) -> XGBRegressor:
@@ -401,8 +404,7 @@ class GeoConformalizedExplainer:
         :param s:
         :return:
         """
-        model = MLPRegressor(hidden_layer_sizes=(2048, 2048, 1204),
-                             random_state=42,
+        model = MLPRegressor(hidden_layer_sizes=(4096, 2048, 1204),
                              max_iter=2000,
                              activation='relu',
                              solver='adam',
@@ -486,6 +488,7 @@ class GeoConformalizedExplainer:
         """
         Explain black-box model with uncertainty aware method.
         :param x_test:
+        :param coord_test:
         :param n_jobs:
         :param is_geo:
         :return:
@@ -515,7 +518,7 @@ class GeoConformalizedExplainer:
         geocp_results = [result[0] for result in results]
         r2 = np.array([result[1] for result in results])
         rmse = np.array([result[2] for result in results])
-        return GeoConformalizedExplainerResults(explanation=s_test, geocp_results=geocp_results, regression_r2=r2, regression_rmse=rmse, coords=self.coord_test, feature_values=x_test, feature_names=self.feature_names)
+        return GeoConformalizedExplainerResults(explanation=s_test, geocp_results=geocp_results, regression_r2=r2, regression_rmse=rmse, coords=coord_test, feature_values=x_test, feature_names=self.feature_names)
 
 
 
