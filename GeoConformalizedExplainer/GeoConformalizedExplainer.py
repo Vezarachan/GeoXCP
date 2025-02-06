@@ -323,8 +323,8 @@ class GeoConformalizedExplainer:
     Geographically Conformalized Explanations for Black-Box Models
     """
     def __init__(self, prediction_f: Callable, x_train: Union[np.ndarray, pd.DataFrame], x_calib: Union[np.ndarray, pd.DataFrame],
-                 coord_calib: Union[np.ndarray, pd.DataFrame] = None, coord_test: Union[np.ndarray, pd.DataFrame] = None,
-                 miscoverage_level: float = 0.1, band_width: float = None, n_samples: int = 500, batch_size: int = 100,
+                 coord_calib: Union[np.ndarray, pd.DataFrame] = None,
+                 miscoverage_level: float = 0.1, band_width: float = None, n_samples: int = 500, batch_size: int = None,
                  feature_names: Union[List[str], np.ndarray] = None, is_single_model: bool = True):
         self.scaler = StandardScaler()
         self.imputer = SimpleImputer(missing_values=np.nan, strategy='mean')
@@ -333,7 +333,6 @@ class GeoConformalizedExplainer:
         self.num_variables = k
         self.n_samples = n_samples
         self.coord_calib = coord_calib
-        self.coord_test = coord_test
         self.miscoverage_level = miscoverage_level
         self.band_width = band_width
         self.batch_size = batch_size
@@ -356,9 +355,13 @@ class GeoConformalizedExplainer:
         :param x:
         :return:
         """
+        if self.batch_size is None:
+            batch_size = int(x.shape[0] / 2)
+        else:
+            batch_size = self.batch_size
         explainer = KernelExplainer(self.prediction_f, x)
-        explainer.stratify_background_set(200)
-        explanation_result = explainer.calculate_shap_values(x, outer_batch_size=self.batch_size, inner_batch_size=self.batch_size, background_fold_to_use=0)[:, :self.num_variables]
+        explainer.stratify_background_set(100)
+        explanation_result = explainer.calculate_shap_values(x, outer_batch_size=batch_size, inner_batch_size=batch_size, background_fold_to_use=0, verbose=True)[:, :self.num_variables]
         return explanation_result
 
     def _fit_explanation_value_predictor(self, x: np.ndarray, t: np.ndarray, s: np.ndarray) -> XGBRegressor:
@@ -398,7 +401,7 @@ class GeoConformalizedExplainer:
         :param s:
         :return:
         """
-        model = MLPRegressor(hidden_layer_sizes=(1024, 2048, 2048),
+        model = MLPRegressor(hidden_layer_sizes=(2048, 2048, 1204),
                              random_state=42,
                              max_iter=2000,
                              activation='relu',
@@ -425,7 +428,7 @@ class GeoConformalizedExplainer:
         x_new = np.hstack((x, t))
         return regression_predict_f(x_new)
 
-    def _explain_ith_variable(self, i: int, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray, s_test: np.ndarray, x_calib_new: np.ndarray, s_calib: np.ndarray) -> Tuple[Any, float, float]:
+    def _explain_ith_variable(self, i: int, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray, s_test: np.ndarray, x_calib_new: np.ndarray, s_calib: np.ndarray, coord_test: np.ndarray) -> Tuple[Any, float, float]:
         """
         Explain a single variable. Each variable has its own regression model.
         :param i:
@@ -444,13 +447,13 @@ class GeoConformalizedExplainer:
                                               miscoverage_level=self.miscoverage_level,
                                               bandwidth=self.band_width,
                                               coord_calib=self.coord_calib,
-                                              coord_test=self.coord_test,
+                                              coord_test=coord_test,
                                               X_calib=x_calib_new, y_calib=s_calib[:, i],
                                               X_test=x_test_new, y_test=s_test[:, i])
         result_ith_variable = geocp.analyze()
         return result_ith_variable, r2, rmse
 
-    def _explain_variables_in_single_model(self, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray, s_test: np.ndarray, x_calib_new: np.ndarray, s_calib: np.ndarray) -> List[List[Any]]:
+    def _explain_variables_in_single_model(self, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray, s_test: np.ndarray, x_calib_new: np.ndarray, s_calib: np.ndarray, coord_test: np.ndarray) -> List[List[Any]]:
         """
         Explain all variables in a single model.
         :param s_train:
@@ -471,7 +474,7 @@ class GeoConformalizedExplainer:
                                                   miscoverage_level=self.miscoverage_level,
                                                   bandwidth=self.band_width,
                                                   coord_calib=self.coord_calib,
-                                                  coord_test=self.coord_test,
+                                                  coord_test=coord_test,
                                                   X_calib=x_calib_new, y_calib=s_calib[:, i],
                                                   X_test=x_test_new, y_test=s_test[:, i])
             result_ith_variable = geocp.analyze()
@@ -479,7 +482,7 @@ class GeoConformalizedExplainer:
         return results
 
 
-    def uncertainty_aware_explain(self, x_test: Union[np.ndarray, pd.DataFrame], n_jobs: int = 4, is_geo: bool = False) -> GeoConformalizedExplainerResults:
+    def uncertainty_aware_explain(self, x_test: Union[np.ndarray, pd.DataFrame], coord_test: Union[np.ndarray, pd.DataFrame], n_jobs: int = 4, is_geo: bool = False) -> GeoConformalizedExplainerResults:
         """
         Explain black-box model with uncertainty aware method.
         :param x_test:
@@ -489,6 +492,8 @@ class GeoConformalizedExplainer:
         """
         if isinstance(x_test, pd.DataFrame):
             x_test = x_test.values
+        if isinstance(coord_test, pd.DataFrame):
+            coord_test = coord_test.values
         t_train = self.prediction_f(self.x_train)
         print('Training SHAP')
         s_train = self._compute_explanation_values(self.x_train)
@@ -502,10 +507,10 @@ class GeoConformalizedExplainer:
         x_test_new = np.hstack((x_test, t_test))
         print('Explaining Variables')
         if self.is_single_model:
-            results = self._explain_variables_in_single_model(s_train, t_train, x_test_new, s_test, x_calib_new, s_calib)
+            results = self._explain_variables_in_single_model(s_train, t_train, x_test_new, s_test, x_calib_new, s_calib, coord_test)
         else:
             results = Parallel(n_jobs=n_jobs)(
-                delayed(self._explain_ith_variable)(i, s_train, t_train, x_test_new, s_test, x_calib_new, s_calib) for i
+                delayed(self._explain_ith_variable)(i, s_train, t_train, x_test_new, s_test, x_calib_new, s_calib, coord_test) for i
                 in tqdm(range(self.num_variables)))
         geocp_results = [result[0] for result in results]
         r2 = np.array([result[1] for result in results])
