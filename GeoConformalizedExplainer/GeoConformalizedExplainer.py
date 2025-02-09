@@ -9,7 +9,7 @@ from fastshap import KernelExplainer
 from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.metrics import root_mean_squared_error, r2_score
 from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.cluster import KMeans
 from sklearn.impute import SimpleImputer
 from xgboost import XGBRegressor
@@ -322,21 +322,35 @@ class GeoConformalizedExplainer:
     Spatial Explanation under Uncertainty
     Geographically Conformalized Explanations for Black-Box Models
     """
-    def __init__(self, prediction_f: Callable, x_train: Union[np.ndarray, pd.DataFrame], x_calib: Union[np.ndarray, pd.DataFrame],
-                 coord_calib: Union[np.ndarray, pd.DataFrame] = None, coord_test: Union[np.ndarray, pd.DataFrame] = None,
-                 miscoverage_level: float = 0.1, band_width: float = None, n_samples: int = 500, batch_size: int = 100,
-                 feature_names: Union[List[str], np.ndarray] = None, is_single_model: bool = True):
-        self.scaler = StandardScaler()
+    def __init__(self,
+                 prediction_f: Callable, shap_value_f: Callable,
+                 x_train: Union[np.ndarray, pd.DataFrame],
+                 x_calib: Union[np.ndarray, pd.DataFrame],
+                 coord_calib: Union[np.ndarray, pd.DataFrame],
+                 miscoverage_level: float = 0.1,
+                 band_width: Union[List[float], np.ndarray, float] = None,
+                 feature_names: Union[List[str], np.ndarray] = None,
+                 is_single_model: bool = True):
+        """
+        :param prediction_f:
+        :param shap_value_f:
+        :param x_train:
+        :param x_calib:
+        :param coord_calib:
+        :param miscoverage_level:
+        :param band_width:
+        :param feature_names:
+        :param is_single_model:
+        """
+        self.scaler = MinMaxScaler()
         self.imputer = SimpleImputer(missing_values=np.nan, strategy='mean')
         self.prediction_f = prediction_f
+        self.shap_value_f = shap_value_f
         _, k = x_calib.shape
         self.num_variables = k
-        self.n_samples = n_samples
         self.coord_calib = coord_calib
-        self.coord_test = coord_test
         self.miscoverage_level = miscoverage_level
         self.band_width = band_width
-        self.batch_size = batch_size
         self.is_single_model = is_single_model
         if feature_names is None:
             self.feature_names = [f'X{i}' for i in range(k)]
@@ -356,9 +370,19 @@ class GeoConformalizedExplainer:
         :param x:
         :return:
         """
-        explainer = KernelExplainer(self.prediction_f, x)
-        explainer.stratify_background_set(200)
-        explanation_result = explainer.calculate_shap_values(x, outer_batch_size=self.batch_size, inner_batch_size=self.batch_size, background_fold_to_use=0)[:, :self.num_variables]
+        # KernelSHAP
+        # background = shap.sample(x, 200)
+        # explainer = shap.KernelExplainer(self.prediction_f, background, feature_names=self.feature_names)
+        # explanation_result = explainer(x).values
+        # ExactSHAP
+        # explainer = shap.Explainer(self.prediction_f, self.x_train, feature_names=self.feature_names, algorithm='auto')
+        # explanation_result = explainer(x).values
+        if self.shap_value_f is None:
+            batch_size = x.shape[0] // 2
+            explainer = KernelExplainer(self.prediction_f, x)
+            explanation_result = explainer.calculate_shap_values(x, verbose=False, outer_batch_size=batch_size, inner_batch_size=batch_size)
+        else:
+            explanation_result = self.shap_value_f(x)
         return explanation_result
 
     def _fit_explanation_value_predictor(self, x: np.ndarray, t: np.ndarray, s: np.ndarray) -> XGBRegressor:
@@ -398,8 +422,7 @@ class GeoConformalizedExplainer:
         :param s:
         :return:
         """
-        model = MLPRegressor(hidden_layer_sizes=(1024, 2048, 2048),
-                             random_state=42,
+        model = MLPRegressor(hidden_layer_sizes=(2048, 2048, 2048),
                              max_iter=2000,
                              activation='relu',
                              solver='adam',
@@ -425,7 +448,7 @@ class GeoConformalizedExplainer:
         x_new = np.hstack((x, t))
         return regression_predict_f(x_new)
 
-    def _explain_ith_variable(self, i: int, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray, s_test: np.ndarray, x_calib_new: np.ndarray, s_calib: np.ndarray) -> Tuple[Any, float, float]:
+    def _explain_ith_variable(self, i: int, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray, s_test: np.ndarray, x_calib_new: np.ndarray, s_calib: np.ndarray, coord_test: np.ndarray) -> Tuple[Any, float, float]:
         """
         Explain a single variable. Each variable has its own regression model.
         :param i:
@@ -444,13 +467,13 @@ class GeoConformalizedExplainer:
                                               miscoverage_level=self.miscoverage_level,
                                               bandwidth=self.band_width,
                                               coord_calib=self.coord_calib,
-                                              coord_test=self.coord_test,
+                                              coord_test=coord_test,
                                               X_calib=x_calib_new, y_calib=s_calib[:, i],
                                               X_test=x_test_new, y_test=s_test[:, i])
         result_ith_variable = geocp.analyze()
         return result_ith_variable, r2, rmse
 
-    def _explain_variables_in_single_model(self, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray, s_test: np.ndarray, x_calib_new: np.ndarray, s_calib: np.ndarray) -> List[List[Any]]:
+    def _explain_variables_in_single_model(self, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray, s_test: np.ndarray, x_calib_new: np.ndarray, s_calib: np.ndarray, coord_test: np.ndarray) -> List[List[Any]]:
         """
         Explain all variables in a single model.
         :param s_train:
@@ -464,14 +487,13 @@ class GeoConformalizedExplainer:
         regressor = self._fit_explanation_value_predictor_single_model(self.x_train, t_train, s_train)
         R2s = r2_score(s_test, regressor.predict(self.scaler.fit_transform(x_test_new)), multioutput='raw_values')
         RMSEs = root_mean_squared_error(regressor.predict(self.scaler.fit_transform(x_test_new)), s_test, multioutput='raw_values')
-        _, k = s_train.shape
         results = []
-        for i in range(k):
+        for i in range(self.num_variables):
             geocp = GeoConformalSpatialPrediction(predict_f=lambda x_: regressor.predict(self.scaler.fit_transform(x_))[:, i],
                                                   miscoverage_level=self.miscoverage_level,
                                                   bandwidth=self.band_width,
                                                   coord_calib=self.coord_calib,
-                                                  coord_test=self.coord_test,
+                                                  coord_test=coord_test,
                                                   X_calib=x_calib_new, y_calib=s_calib[:, i],
                                                   X_test=x_test_new, y_test=s_test[:, i])
             result_ith_variable = geocp.analyze()
@@ -479,16 +501,19 @@ class GeoConformalizedExplainer:
         return results
 
 
-    def uncertainty_aware_explain(self, x_test: Union[np.ndarray, pd.DataFrame], n_jobs: int = 4, is_geo: bool = False) -> GeoConformalizedExplainerResults:
+    def uncertainty_aware_explain(self, x_test: Union[np.ndarray, pd.DataFrame], coord_test: Union[np.ndarray, pd.DataFrame], n_jobs: int = 4, is_geo: bool = False) -> GeoConformalizedExplainerResults:
         """
         Explain black-box model with uncertainty aware method.
         :param x_test:
+        :param coord_test:
         :param n_jobs:
         :param is_geo:
         :return:
         """
         if isinstance(x_test, pd.DataFrame):
             x_test = x_test.values
+        if isinstance(coord_test, pd.DataFrame):
+            coord_test = coord_test.values
         t_train = self.prediction_f(self.x_train)
         print('Training SHAP')
         s_train = self._compute_explanation_values(self.x_train)
@@ -502,15 +527,15 @@ class GeoConformalizedExplainer:
         x_test_new = np.hstack((x_test, t_test))
         print('Explaining Variables')
         if self.is_single_model:
-            results = self._explain_variables_in_single_model(s_train, t_train, x_test_new, s_test, x_calib_new, s_calib)
+            results = self._explain_variables_in_single_model(s_train, t_train, x_test_new, s_test, x_calib_new, s_calib, coord_test)
         else:
             results = Parallel(n_jobs=n_jobs)(
-                delayed(self._explain_ith_variable)(i, s_train, t_train, x_test_new, s_test, x_calib_new, s_calib) for i
+                delayed(self._explain_ith_variable)(i, s_train, t_train, x_test_new, s_test, x_calib_new, s_calib, coord_test) for i
                 in tqdm(range(self.num_variables)))
         geocp_results = [result[0] for result in results]
         r2 = np.array([result[1] for result in results])
         rmse = np.array([result[2] for result in results])
-        return GeoConformalizedExplainerResults(explanation=s_test, geocp_results=geocp_results, regression_r2=r2, regression_rmse=rmse, coords=self.coord_test, feature_values=x_test, feature_names=self.feature_names)
+        return GeoConformalizedExplainerResults(explanation=s_test, geocp_results=geocp_results, regression_r2=r2, regression_rmse=rmse, coords=coord_test, feature_values=x_test, feature_names=self.feature_names)
 
 
 
