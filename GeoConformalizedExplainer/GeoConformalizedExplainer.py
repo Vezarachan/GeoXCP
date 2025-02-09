@@ -323,10 +323,11 @@ class GeoConformalizedExplainer:
     Geographically Conformalized Explanations for Black-Box Models
     """
     def __init__(self,
-                 prediction_f: Callable, shap_value_f: Callable,
+                 prediction_f: Callable,
                  x_train: Union[np.ndarray, pd.DataFrame],
                  x_calib: Union[np.ndarray, pd.DataFrame],
                  coord_calib: Union[np.ndarray, pd.DataFrame],
+                 shap_value_f: Callable = None,
                  miscoverage_level: float = 0.1,
                  band_width: Union[List[float], np.ndarray, float] = None,
                  feature_names: Union[List[str], np.ndarray] = None,
