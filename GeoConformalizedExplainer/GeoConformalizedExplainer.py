@@ -448,7 +448,7 @@ class GeoConformalizedExplainer:
         model.fit(x_new, s)
         return model
 
-    def _fit_explanation_value_predictor_nn_model(self, x_train: np.ndarray, t_train: np.ndarray, s_train: np.ndarray, x_val: np.ndarray, t_val: np.ndarray, s_val: np.ndarray, is_save: bool = False) -> MultipleTargetRegression:
+    def _fit_explanation_value_predictor_nn_model(self, x_train: np.ndarray, t_train: np.ndarray, s_train: np.ndarray, x_val: np.ndarray, t_val: np.ndarray, s_val: np.ndarray, is_save: bool = True) -> MultipleTargetRegression:
         t_train = t_train.reshape(-1, 1)
         x_train_new = np.hstack((x_train, t_train))
         x_train_new = self.scaler.fit_transform(x_train_new)
