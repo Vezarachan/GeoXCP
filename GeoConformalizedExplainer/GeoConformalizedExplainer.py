@@ -5,6 +5,8 @@ import pandas as pd
 import geopandas as gpd
 import math
 import shap
+import torch
+from examples.plot_qrf_prediction_intervals import train_index
 from fastshap import KernelExplainer
 from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.metrics import root_mean_squared_error, r2_score
@@ -22,6 +24,9 @@ from math import ceil
 from pygam import LinearGAM, s
 from GeoConformal import GeoConformalSpatialPrediction
 from GeoConformal.geocp import GeoConformalResults
+from GeoConformalizedExplainer.model import get_dataloader, MultipleTargetRegression
+import torch.nn as nn
+import torch.optim as optim
 
 
 class GeoConformalizedExplainerResults:
@@ -379,9 +384,14 @@ class GeoConformalizedExplainer:
         # explainer = shap.Explainer(self.prediction_f, self.x_train, feature_names=self.feature_names, algorithm='auto')
         # explanation_result = explainer(x).values
         if self.shap_value_f is None:
-            batch_size = x.shape[0] // 2
-            explainer = KernelExplainer(self.prediction_f, x)
-            explanation_result = explainer.calculate_shap_values(x, verbose=False, outer_batch_size=batch_size, inner_batch_size=batch_size)
+            # batch_size = x.shape[0] // 2
+            # explainer = KernelExplainer(self.prediction_f, x)
+            # explainer.stratify_background_set(20)
+            # explanation_result = explainer.calculate_shap_values(x, verbose=True, outer_batch_size=batch_size, inner_batch_size=batch_size, background_fold_to_use=0)
+            # explanation_result = explanation_result[:, :self.num_variables]
+            background = shap.sample(x, 100)
+            explainer = shap.KernelExplainer(self.prediction_f, background, feature_names=self.feature_names)
+            explanation_result = explainer(x).values
         else:
             explanation_result = self.shap_value_f(x)
         return explanation_result
@@ -423,7 +433,7 @@ class GeoConformalizedExplainer:
         :param s:
         :return:
         """
-        model = MLPRegressor(hidden_layer_sizes=(2048, 2048, 2048),
+        model = MLPRegressor(hidden_layer_sizes=(1024, 1024, 1024, 1024, 1024),
                              max_iter=2000,
                              activation='relu',
                              solver='adam',
@@ -438,16 +448,63 @@ class GeoConformalizedExplainer:
         model.fit(x_new, s)
         return model
 
-    def _predict_explanation_values(self, x: np.ndarray, t: np.ndarray, regression_predict_f: Callable) -> np.ndarray:
+    def _fit_explanation_value_predictor_nn_model(self, x_train: np.ndarray, t_train: np.ndarray, s_train: np.ndarray, x_val: np.ndarray, t_val: np.ndarray, s_val: np.ndarray, is_save: bool = False) -> MultipleTargetRegression:
+        t_train = t_train.reshape(-1, 1)
+        x_train_new = np.hstack((x_train, t_train))
+        x_train_new = self.scaler.fit_transform(x_train_new)
+        x_train_new = self.imputer.fit_transform(x_train_new)
+        t_val = t_val.reshape(-1, 1)
+        x_val_new = np.hstack((x_val, t_val))
+        x_val_new = self.scaler.fit_transform(x_val_new)
+        x_val_new = self.imputer.fit_transform(x_val_new)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        train_dataloader = get_dataloader(x_train_new, s_train, 100, num_workers=2)
+        val_dataloader = get_dataloader(x_val_new, s_val, 100, num_workers=2)
+        model = MultipleTargetRegression(input_dim=x_train_new.shape[1], output_dim=s_train.shape[1], num_blocks=2).to(device)
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        num_epochs = 500
+        train_loss = 0.0
+
+        for epoch in tqdm(range(num_epochs)):
+            model.train()
+            for batch_X, batch_y in train_dataloader:
+                batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                optimizer.zero_grad()
+                predictions = model(batch_X)
+                loss = criterion(predictions, batch_y)
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item()
+
+            model.eval()
+            val_loss = 0.0
+            with torch.no_grad():  # No gradients needed during evaluation
+                for batch_X, batch_y in val_dataloader:
+                    batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                    outputs = model(batch_X)
+                    loss = criterion(outputs, batch_y)
+                    val_loss += loss.item()
+
+            if epoch % 10 == 0:
+                print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss/len(train_dataloader):.4f}, Val Loss: {val_loss/len(val_dataloader):.4f}")
+        if is_save:
+            torch.save(model.state_dict(), f'../data/model_trained.pth')
+        return model
+
+    def _predict_explanation_values(self, x: np.ndarray, model: MultipleTargetRegression) -> np.ndarray:
         """
         Predict explanation values from input values X and predicted values t.
         :param X:
         :param t:
         :return:
         """
-        t = t.reshape(-1, 1)
-        x_new = np.hstack((x, t))
-        return regression_predict_f(x_new)
+        model.eval()
+        x = self.scaler.fit_transform(x)
+        x = torch.tensor(x, dtype=torch.float32)
+        y_pred = model(x)
+        y_pred = y_pred.detach().cpu().numpy()
+        return y_pred
 
     def _explain_ith_variable(self, i: int, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray, s_test: np.ndarray, x_calib_new: np.ndarray, s_calib: np.ndarray, coord_test: np.ndarray) -> Tuple[Any, float, float]:
         """
@@ -501,6 +558,24 @@ class GeoConformalizedExplainer:
             results.append([result_ith_variable, R2s[i], RMSEs[i]])
         return results
 
+    def _explain_variables_in_nn_model(self, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray, s_test: np.ndarray, x_calib_new: np.ndarray, s_calib: np.ndarray, coord_test: np.ndarray) -> List[List[Any]]:
+        regressor = self._fit_explanation_value_predictor_nn_model(self.x_train, t_train, s_train)
+        s_test_pred = self._predict_explanation_values(x_test_new, regressor)
+        R2s = r2_score(s_test, s_test_pred, multioutput='raw_values')
+        RMSEs = root_mean_squared_error(s_test, s_test_pred, multioutput='raw_values')
+        results = []
+        for i in range(self.num_variables):
+            geocp = GeoConformalSpatialPrediction(predict_f=lambda x_: self._predict_explanation_values(x_, regressor)[:, i],
+                                                  miscoverage_level=self.miscoverage_level,
+                                                  bandwidth=self.band_width,
+                                                  coord_calib=self.coord_calib,
+                                                  coord_test=coord_test,
+                                                  X_calib=x_calib_new, y_calib=s_calib[:, i],
+                                                  X_test=x_test_new, y_test=s_test[:, i])
+            result_ith_variable = geocp.analyze()
+            results.append([result_ith_variable, R2s[i], RMSEs[i]])
+        return results
+
 
     def uncertainty_aware_explain(self, x_test: Union[np.ndarray, pd.DataFrame], coord_test: Union[np.ndarray, pd.DataFrame], n_jobs: int = 4, is_geo: bool = False) -> GeoConformalizedExplainerResults:
         """
@@ -528,7 +603,7 @@ class GeoConformalizedExplainer:
         x_test_new = np.hstack((x_test, t_test))
         print('Explaining Variables')
         if self.is_single_model:
-            results = self._explain_variables_in_single_model(s_train, t_train, x_test_new, s_test, x_calib_new, s_calib, coord_test)
+            results = self._explain_variables_in_nn_model(s_train, t_train, x_test_new, s_test, x_calib_new, s_calib, coord_test)
         else:
             results = Parallel(n_jobs=n_jobs)(
                 delayed(self._explain_ith_variable)(i, s_train, t_train, x_test_new, s_test, x_calib_new, s_calib, coord_test) for i
