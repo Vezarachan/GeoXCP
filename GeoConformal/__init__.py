@@ -1,1 +1,1 @@
-from .geocp import GeoConformalSpatialPrediction
+from .GeoConformal import GeoConformalSpatialPrediction, GeoConformalResults

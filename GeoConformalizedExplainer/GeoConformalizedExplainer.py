@@ -6,7 +6,6 @@ import geopandas as gpd
 import math
 import shap
 import torch
-from examples.plot_qrf_prediction_intervals import train_index
 from fastshap import KernelExplainer
 from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.metrics import root_mean_squared_error, r2_score
@@ -22,9 +21,8 @@ import geoplot.crs as gcrs
 import contextily as cx
 from math import ceil
 from pygam import LinearGAM, s
-from GeoConformal import GeoConformalSpatialPrediction
-from GeoConformal.geocp import GeoConformalResults
-from GeoConformalizedExplainer.model import get_dataloader, MultipleTargetRegression
+from GeoConformal import GeoConformalSpatialPrediction, GeoConformalResults
+from .model import get_dataloader, MultipleTargetRegression
 import torch.nn as nn
 import torch.optim as optim
 
@@ -558,8 +556,8 @@ class GeoConformalizedExplainer:
             results.append([result_ith_variable, R2s[i], RMSEs[i]])
         return results
 
-    def _explain_variables_in_nn_model(self, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray, s_test: np.ndarray, x_calib_new: np.ndarray, s_calib: np.ndarray, coord_test: np.ndarray) -> List[List[Any]]:
-        regressor = self._fit_explanation_value_predictor_nn_model(self.x_train, t_train, s_train)
+    def _explain_variables_in_nn_model(self, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray, s_test: np.ndarray, x_calib_new: np.ndarray, t_calib: np.ndarray, s_calib: np.ndarray, coord_test: np.ndarray) -> List[List[Any]]:
+        regressor = self._fit_explanation_value_predictor_nn_model(self.x_train, t_train, s_train, self.x_calib, t_calib, s_calib)
         s_test_pred = self._predict_explanation_values(x_test_new, regressor)
         R2s = r2_score(s_test, s_test_pred, multioutput='raw_values')
         RMSEs = root_mean_squared_error(s_test, s_test_pred, multioutput='raw_values')
@@ -603,7 +601,8 @@ class GeoConformalizedExplainer:
         x_test_new = np.hstack((x_test, t_test))
         print('Explaining Variables')
         if self.is_single_model:
-            results = self._explain_variables_in_nn_model(s_train, t_train, x_test_new, s_test, x_calib_new, s_calib, coord_test)
+            results = self._explain_variables_in_nn_model(s_train, t_train, x_test_new, s_test, x_calib_new, t_calib, s_calib, coord_test)
+            # results = self._explain_variables_in_single_model(s_train, t_train, x_test_new, s_test, x_calib_new, s_calib, coord_test)
         else:
             results = Parallel(n_jobs=n_jobs)(
                 delayed(self._explain_ith_variable)(i, s_train, t_train, x_test_new, s_test, x_calib_new, s_calib, coord_test) for i
