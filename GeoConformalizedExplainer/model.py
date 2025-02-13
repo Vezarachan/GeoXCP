@@ -7,8 +7,8 @@ from torch.utils.data import Dataset, DataLoader
 class ResidualBlock(nn.Module):
     def __init__(self, input_dim):
         super(ResidualBlock, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 256)
-        self.fc2 = nn.Linear(256, input_dim)
+        self.fc1 = nn.Linear(input_dim, 32)
+        self.fc2 = nn.Linear(32, input_dim)
         self.activation = nn.ReLU()
 
     def forward(self, x):
@@ -24,9 +24,9 @@ class ResidualBlock(nn.Module):
 class MultipleTargetRegression(nn.Module):
     def __init__(self, input_dim, output_dim, num_blocks=3):
         super(MultipleTargetRegression, self).__init__()
-        self.input_layer = nn.Linear(input_dim, 256)
-        self.output_layer = nn.Linear(256, output_dim)
-        self.residual_blocks = nn.Sequential(*[ResidualBlock(256) for _ in range(num_blocks)])
+        self.input_layer = nn.Linear(input_dim, 32)
+        self.output_layer = nn.Linear(32, output_dim)
+        self.residual_blocks = nn.Sequential(*[ResidualBlock(32) for _ in range(num_blocks)])
 
     def forward(self, x):
         x = torch.relu(self.input_layer(x))
