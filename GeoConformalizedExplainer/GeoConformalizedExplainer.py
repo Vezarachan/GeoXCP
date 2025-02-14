@@ -9,7 +9,7 @@ import torch
 from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.metrics import root_mean_squared_error, r2_score
 from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.impute import SimpleImputer
 from xgboost import XGBRegressor
 from joblib import Parallel, delayed
@@ -126,6 +126,7 @@ class GeoConformalizedExplainerResults:
         return df
 
     def plot_absolute_shap_value_with_uncertainty(self, filename: str = None):
+        plt.style.use('default')
         plt.rcParams['font.size'] = 12
         mean_abs_importance = np.mean(np.abs(self.explanation_values), axis=0)
         index = np.argsort(mean_abs_importance)
@@ -157,6 +158,7 @@ class GeoConformalizedExplainerResults:
         return formatted_number
 
     def plot_shap_values_with_uncertainty(self, i: int, filename: str = None):
+        plt.style.use('default')
         plt.rcParams['font.size'] = 12
         fig, ax = plt.subplots(figsize=(10, 10))
         result_i = self.result.iloc[i]
@@ -211,6 +213,7 @@ class GeoConformalizedExplainerResults:
     def plot_geo_uncertainty(self, max_cols: int = 5, figsize: List[int] = None, crs: Any = gcrs.WebMercator(),
                              filename: str = None, shrink: float = 0.8, basemap: bool = True,
                              s_limits: List[int] = (2, 12), cmap: str = 'flare'):
+        plt.style.use('default')
         n_cols = min(self.K, max_cols)
         n_rows = ceil(self.K / n_cols)
 
@@ -246,6 +249,7 @@ class GeoConformalizedExplainerResults:
 
     def plot_partial_dependence_with_fitted_bounds(self, max_cols: int = 5, figsize: List[int] = None,
                                                    n_splines: int = 50, title: str = None, filename: str = None):
+        plt.style.use('default')
         n_cols = min(self.K, max_cols)
         n_rows = ceil(self.K / n_cols)
 
@@ -291,6 +295,7 @@ class GeoConformalizedExplainerResults:
 
     def plot_partial_plot_with_individual_intervals(self, max_cols: int = 5, figsize: List[int] = None,
                                                     filename: str = None):
+        plt.style.use('default')
         n_cols = min(self.K, max_cols)
         n_rows = ceil(self.K / n_cols)
 
@@ -355,8 +360,8 @@ class GeoConformalizedExplainer:
         :param feature_names:
         :param is_single_model:
         """
-        self.x_scaler = StandardScaler()
-        self.y_scaler = StandardScaler()
+        self.x_scaler = MinMaxScaler()
+        self.y_scaler = MinMaxScaler()
         self.imputer = SimpleImputer(missing_values=np.nan, strategy='mean')
         self.prediction_f = prediction_f
         self.shap_value_f = shap_value_f
@@ -393,11 +398,6 @@ class GeoConformalizedExplainer:
         # explainer = shap.Explainer(self.prediction_f, self.x_train, feature_names=self.feature_names, algorithm='auto')
         # explanation_result = explainer(x).values
         if self.shap_value_f is None:
-            # batch_size = x.shape[0] // 2
-            # explainer = KernelExplainer(self.prediction_f, x)
-            # explainer.stratify_background_set(20)
-            # explanation_result = explainer.calculate_shap_values(x, verbose=True, outer_batch_size=batch_size, inner_batch_size=batch_size, background_fold_to_use=0)
-            # explanation_result = explanation_result[:, :self.num_variables]
             background = shap.sample(x, 100)
             explainer = shap.KernelExplainer(self.prediction_f, background, feature_names=self.feature_names)
             explanation_result = explainer(x).values
@@ -443,7 +443,7 @@ class GeoConformalizedExplainer:
         :param s:
         :return:
         """
-        model = MLPRegressor(hidden_layer_sizes=(1024, 2048, 2048),
+        model = MLPRegressor(hidden_layer_sizes=(1024, 2048, 1024),
                              max_iter=2000,
                              activation='relu',
                              solver='adam',
@@ -455,6 +455,7 @@ class GeoConformalizedExplainer:
         x_new = np.hstack((x, t))
         x_new = self.x_scaler.fit_transform(x_new)
         x_new = self.imputer.fit_transform(x_new)
+        s = self.y_scaler.fit_transform(s)
         model.fit(x_new, s)
         return model
 
@@ -519,7 +520,13 @@ class GeoConformalizedExplainer:
             torch.save(model.state_dict(), f'../data/model_trained.pth')
         return model
 
-    def _predict_explanation_values(self, x: np.ndarray, model: MultipleTargetRegression, device: str) -> np.ndarray:
+    def _predict_explanation_values_single_model(self, x: np.ndarray, model: MLPRegressor) -> np.ndarray:
+        x = self.x_scaler.transform(x)
+        y_pred = model.predict(x)
+        y_pred = self.y_scaler.inverse_transform(y_pred)
+        return y_pred
+
+    def _predict_explanation_values_nn_model(self, x: np.ndarray, model: MultipleTargetRegression, device: str) -> np.ndarray:
         """
         Predict explanation values from input values X and predicted values t.
         :param x:
@@ -576,13 +583,13 @@ class GeoConformalizedExplainer:
         :return:
         """
         regressor = self._fit_explanation_value_predictor_single_model(self.x_train, t_train, s_train)
-        R2s = r2_score(s_test, regressor.predict(self.x_scaler.transform(x_test_new)), multioutput='raw_values')
-        RMSEs = root_mean_squared_error(regressor.predict(self.x_scaler.transform(x_test_new)), s_test,
-                                        multioutput='raw_values')
+        s_test_pred = self._predict_explanation_values_single_model(x_test_new, regressor)
+        R2s = r2_score(s_test, s_test_pred, multioutput='raw_values')
+        RMSEs = root_mean_squared_error(s_test_pred, s_test, multioutput='raw_values')
         results = []
         for i in range(self.num_variables):
             geocp = GeoConformalSpatialPrediction(
-                predict_f=lambda x_: regressor.predict(self.x_scaler.transform(x_))[:, i],
+                predict_f=lambda x_: self._predict_explanation_values_single_model(x_, regressor)[:, i],
                 miscoverage_level=self.miscoverage_level,
                 bandwidth=self.band_width,
                 coord_calib=self.coord_calib,
@@ -599,13 +606,13 @@ class GeoConformalizedExplainer:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         regressor = self._fit_explanation_value_predictor_nn_model(self.x_train, t_train, s_train, self.x_calib,
                                                                    t_calib, s_calib, device)
-        s_test_pred = self._predict_explanation_values(x_test_new, regressor, device)
+        s_test_pred = self._predict_explanation_values_nn_model(x_test_new, regressor, device)
         R2s = r2_score(s_test, s_test_pred, multioutput='raw_values')
         RMSEs = root_mean_squared_error(s_test, s_test_pred, multioutput='raw_values')
         results = []
         for i in range(self.num_variables):
             geocp = GeoConformalSpatialPrediction(
-                predict_f=lambda x_: self._predict_explanation_values(x_, regressor, device)[:, i],
+                predict_f=lambda x_: self._predict_explanation_values_nn_model(x_, regressor, device)[:, i],
                 miscoverage_level=self.miscoverage_level,
                 bandwidth=self.band_width,
                 coord_calib=self.coord_calib,
@@ -644,8 +651,7 @@ class GeoConformalizedExplainer:
         x_test_new = np.hstack((x_test, t_test))
         print('Explaining Variables')
         if self.is_single_model:
-            # results = self._explain_variables_in_nn_model(s_train, t_train, x_test_new, s_test, x_calib_new, t_calib,
-            #                                               s_calib, coord_test)
+            # results = self._explain_variables_in_nn_model(s_train, t_train, x_test_new, s_test, x_calib_new, t_calib, s_calib, coord_test)
             results = self._explain_variables_in_single_model(s_train, t_train, x_test_new, s_test, x_calib_new, s_calib, coord_test)
         else:
             results = Parallel(n_jobs=n_jobs)(
