@@ -57,7 +57,7 @@ class GeoConformalSpatialPrediction:
         self.geo_uncertainty = np.array(uncertainty_list)
         self.uncertainty = uncertainty
 
-    def predict_confidence_interval(self):
+    def predict_prediction_interval(self):
         """
         Calculate the confidence interval based on uncertainty
         :return:
@@ -77,7 +77,7 @@ class GeoConformalSpatialPrediction:
 
     def analyze(self):
         self.predict_geoconformal_uncertainty()
-        self.predict_confidence_interval()
+        self.predict_prediction_interval()
         self.coverage_probability()
         return GeoConformalResults(self.geo_uncertainty, self.uncertainty, self.coord_test, self.predicted_value,
                                    self.upper_bound, self.lower_bound, self.coverage_proba)

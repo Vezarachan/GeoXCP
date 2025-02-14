@@ -1,5 +1,6 @@
 from typing import Callable, Any, List, Tuple, Union
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -9,7 +10,7 @@ import torch
 from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.metrics import root_mean_squared_error, r2_score
 from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.impute import SimpleImputer
 from xgboost import XGBRegressor
 from joblib import Parallel, delayed
@@ -18,7 +19,7 @@ import geoplot as gplt
 import geoplot.crs as gcrs
 import contextily as cx
 from math import ceil
-from pygam import LinearGAM
+import statsmodels.api as sm
 from GeoConformal import GeoConformalSpatialPrediction, GeoConformalResults
 from .model import get_dataloader, MultipleTargetRegression
 import torch.nn as nn
@@ -108,24 +109,51 @@ class GeoConformalizedExplainerResults:
         return params[:, cols]
 
     def accuracy_summary(self) -> pd.DataFrame:
-        coverage_proba_list = []
+        uncertainty_list = []
         for name in self.feature_names:
-            coverage_name = f'{name}_coverage_probability'
-            coverage_proba = self.result[coverage_name][0]
-            coverage_proba_list.append(coverage_proba)
-        coverage_proba_list = np.array(coverage_proba_list).reshape(-1, 1)
+            uncertainty_name = f'{name}_uncertainty'
+            uncertainty = self.result[uncertainty_name][0]
+            uncertainty_list.append(uncertainty)
+        uncertainty_list = np.array(uncertainty_list)
+        mean_abs_importance = np.mean(np.abs(self.explanation_values), axis=0)
         shap_var = self._shap_var()
         pred_shap_var = self._predicted_shap_var()
-        df = pd.DataFrame(np.hstack((coverage_proba_list,
+        df = pd.DataFrame(np.hstack((mean_abs_importance.reshape(-1, 1),
+                                     uncertainty_list.reshape(-1, 1),
                                      self.regression_r2.reshape(-1, 1),
                                      self.regression_rmse.reshape(-1, 1),
                                      shap_var.reshape(-1, 1),
                                      pred_shap_var.reshape(-1, 1))),
-                          columns=['coverage_probability', 'R2', 'RMSE', 'SHAP_Var', 'Pred_SHAP_Var'])
+                          columns=['Mean(|SHAP_value|)', 'Uncertainty', 'R2', 'RMSE', 'SHAP_Var', 'Pred_SHAP_Var'])
         df.index = self.feature_names
         return df
 
+    # def plot_absolute_shap_value_with_uncertainty(self, filename: str = None):
+    #     plt.style.use('default')
+    #     plt.rcParams['font.size'] = 12
+    #     mean_abs_importance = np.mean(np.abs(self.explanation_values), axis=0)
+    #     index = np.argsort(mean_abs_importance)
+    #     sorted_mean_abs_importance = mean_abs_importance[index]
+    #     sorted_feature_names = np.array(self.feature_names)[index]
+    #     uncertainty = []
+    #     for i in range(len(self.feature_names)):
+    #         uncertainty.append(self.geocp_results[i].uncertainty)
+    #     sorted_uncertainty = np.array(uncertainty)[index]
+    #     fig, axes = plt.subplots(ncols=2, sharey=True, figsize=(10, 10))
+    #     axes[0].barh(sorted_feature_names, sorted_mean_abs_importance, align='center', color='#ff0d57')
+    #     axes[1].barh(sorted_feature_names, sorted_uncertainty, align='center', color='#1e88e5')
+    #     axes[0].set(title='mean(|SHAP Value|)')
+    #     axes[1].set(title='Uncertainty')
+    #     axes[0].invert_xaxis()
+    #     axes[0].set(yticks=np.arange(len(sorted_feature_names)), yticklabels=sorted_feature_names)
+    #     axes[0].yaxis.tick_right()
+    #     fig.tight_layout()
+    #     if filename:
+    #         plt.savefig(filename, dpi=300, bbox_inches='tight')
+    #     plt.show()
+
     def plot_absolute_shap_value_with_uncertainty(self, filename: str = None):
+        plt.style.use('default')
         plt.rcParams['font.size'] = 12
         mean_abs_importance = np.mean(np.abs(self.explanation_values), axis=0)
         index = np.argsort(mean_abs_importance)
@@ -135,14 +163,27 @@ class GeoConformalizedExplainerResults:
         for i in range(len(self.feature_names)):
             uncertainty.append(self.geocp_results[i].uncertainty)
         sorted_uncertainty = np.array(uncertainty)[index]
-        fig, axes = plt.subplots(ncols=2, sharey=True, figsize=(10, 10))
-        axes[0].barh(sorted_feature_names, sorted_mean_abs_importance, align='center', color='#ff0d57')
-        axes[1].barh(sorted_feature_names, sorted_uncertainty, align='center', color='#1e88e5')
-        axes[0].set(title='mean(|SHAP Value|)')
-        axes[1].set(title='Uncertainty')
-        axes[0].invert_xaxis()
-        axes[0].set(yticks=np.arange(len(sorted_feature_names)), yticklabels=sorted_feature_names)
-        axes[0].yaxis.tick_right()
+        fig_width = 0.75 * len(self.feature_names)
+        fig_height = fig_width * 0.75
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=300)
+        x_positions = np.arange(len(sorted_feature_names))
+        for y_shap, y_uncertainty, x, sorted_feature_name in zip(sorted_mean_abs_importance, sorted_uncertainty,
+                                                                 x_positions, sorted_feature_names):
+            ax.plot(x, y_shap, marker='o', color='#009688', markersize=10, zorder=10)
+            ax.plot(x, y_uncertainty, marker='o', color='#762a83', markersize=10, zorder=10)
+            ax.plot([x, x], [y_shap, 0.1], '-', linewidth=8, color='#009688', alpha=0.3)
+            ax.plot([x, x], [y_uncertainty, 0.05], '-', linewidth=2, color='#762a83', alpha=0.5)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+        ax.grid(True, axis='y')
+        plt.xticks(x_positions, sorted_feature_names, rotation=-45)
+        max_x = len(self.feature_names) - 1
+        shap_y = sorted_mean_abs_importance[-1]
+        uncertainty_y = sorted_uncertainty[-1]
+        ax.text(s='Mean(|SHAP value|)', x=max_x + 0.2, y=shap_y, va='center', ha='left', fontsize=8, color='#009688')
+        ax.text(s='Uncertainty', x=max_x  + 0.2, y=uncertainty_y, va='center', ha='left', fontsize=8, color='#762a83')
         fig.tight_layout()
         if filename:
             plt.savefig(filename, dpi=300, bbox_inches='tight')
@@ -157,49 +198,38 @@ class GeoConformalizedExplainerResults:
         return formatted_number
 
     def plot_shap_values_with_uncertainty(self, i: int, filename: str = None):
+        plt.style.use('default')
         plt.rcParams['font.size'] = 12
-        fig, ax = plt.subplots(figsize=(10, 10))
+        fig_height = 0.75 * len(self.feature_names)
+        fig_width = fig_height * 1.1
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=300)
         result_i = self.result.iloc[i]
         feature_values_i = self.feature_values[i, :]
         shap_values_i = self.explanation_values[i, :]
         lower_bound_list = []
         upper_bound_list = []
-        for feature_name in self.feature_names:
-            lower_bound_list.append(result_i[f'{feature_name}_lower_bound'])
-            upper_bound_list.append(result_i[f'{feature_name}_upper_bound'])
-        colors = ['#ff0d57' if e >= 0 else '#1e88e5' for e in shap_values_i]
-        # labels = [f'+{self._format_number_based_on_magnitude(e)}' if e >= 0 else f'{self._format_number_based_on_magnitude(e)}' for e in shap_values_i]
+        for j, feature_name in enumerate(self.feature_names):
+            lower_bound_list.append(shap_values_i[j] - result_i[f'{feature_name}_geo_uncertainty'])
+            upper_bound_list.append(shap_values_i[j] + result_i[f'{feature_name}_geo_uncertainty'])
+        point_colors = ['#a50f15' if e >= 0 else '#08519c' for e in shap_values_i]
+        gradient_colors = [['#fee5d9', '#de2d26', '#fee5d9'] if e >= 0 else ['#c6dbef', '#3182bd', '#c6dbef'] for e in shap_values_i]
 
-        bars = ax.barh(self.feature_names, shap_values_i, color=colors)
+        ax.axvline(0, color='#a1a1a1', linestyle='--')
+
         y_positions = np.arange(len(self.feature_names))
 
-        for i, (bar, value) in enumerate(zip(bars, shap_values_i)):
-            offset = -10 if value < 0 else 1
-            label = f'+{self._format_number_based_on_magnitude(value)}' if value >= 0 else f'{self._format_number_based_on_magnitude(value)}'
-            color = '#ff0d57' if value >= 0 else '#1e88e5'
-            ax.annotate(
-                label,
-                xy=(value, i + bar.get_height() / 3),  # Position
-                xytext=(offset * len(label), 0),  # Offset (x, y) in points
-                textcoords="offset points",  # Relative positioning
-                va='center',  # Vertical alignment
-                fontsize=8,
-                color=color
-            )
-
-        num_feature_names = len(self.feature_names)
-        width = (num_feature_names / 10) * 0.05
-        for y, x, low, high in zip(y_positions, shap_values_i, lower_bound_list, upper_bound_list):
-            mid = (low + high) / 2
-            ax.plot([low, high], [y, y], color='#454545', linewidth=1.5, solid_capstyle='butt', zorder=1)
-            ax.plot([low, low], [y - width, y + width], color='#454545', linewidth=1.5, solid_capstyle='butt', zorder=1)
-            ax.plot([high, high], [y - width, y + width], color='#454545', linewidth=1.5, solid_capstyle='butt',
-                    zorder=1)
-            ax.plot(mid, y, color='#ea801c', marker='o', markersize=6, zorder=2)
+        height = 0.2
+        for y, x, low, high, point_color, gradient_color in zip(y_positions, shap_values_i, lower_bound_list, upper_bound_list, point_colors, gradient_colors):
+            gradient = np.linspace(0, 1, 256).reshape(1, -1)
+            extent = [low, high, y - height, y + height]
+            cmap = LinearSegmentedColormap.from_list('gradient', gradient_color)
+            ax.imshow(gradient, aspect='auto', cmap=cmap, extent=extent, alpha=0.8)
+            ax.vlines(x, y - height, y + height, colors=point_color, linewidths=5)
         plt.xlabel('Importance')
 
         y_ticks = []
         for name, value in zip(self.feature_names, feature_values_i):
+            value = self._format_number_based_on_magnitude(value)
             y_ticks.append(f'{name} = {value}')
 
         plt.yticks(y_positions, y_ticks)
@@ -211,6 +241,7 @@ class GeoConformalizedExplainerResults:
     def plot_geo_uncertainty(self, max_cols: int = 5, figsize: List[int] = None, crs: Any = gcrs.WebMercator(),
                              filename: str = None, shrink: float = 0.8, basemap: bool = True,
                              s_limits: List[int] = (2, 12), cmap: str = 'flare'):
+        plt.style.use('default')
         n_cols = min(self.K, max_cols)
         n_rows = ceil(self.K / n_cols)
 
@@ -246,6 +277,7 @@ class GeoConformalizedExplainerResults:
 
     def plot_partial_dependence_with_fitted_bounds(self, max_cols: int = 5, figsize: List[int] = None,
                                                    n_splines: int = 50, title: str = None, filename: str = None):
+        plt.style.use('default')
         n_cols = min(self.K, max_cols)
         n_rows = ceil(self.K / n_cols)
 
@@ -263,17 +295,10 @@ class GeoConformalizedExplainerResults:
             feature_values = self.result[f'{name}_value'].values
             lower_bounds = self.result[f'{name}_lower_bound'].values
             upper_bounds = self.result[f'{name}_upper_bound'].values
-            lam = np.logspace(2, 7, 5).reshape(-1, 1)
-            upper_gam = LinearGAM(n_splines=n_splines, fit_intercept=False).gridsearch(feature_values.reshape(-1, 1),
-                                                                                       upper_bounds.reshape(-1, 1),
-                                                                                       lam=lam)
-            lower_gam = LinearGAM(n_splines=n_splines, fit_intercept=False).gridsearch(feature_values.reshape(-1, 1),
-                                                                                       lower_bounds.reshape(-1, 1),
-                                                                                       lam=lam)
-            x = np.linspace(feature_values.min(), feature_values.max(), 250)
-            y_pred_lower = upper_gam.predict(x)
-            y_pred_upper = lower_gam.predict(x)
-            ax.fill_between(x, y_pred_upper, y_pred_lower, color='#3594cc', alpha=0.5)
+            lower_smoothed = sm.nonparametric.lowess(exog=feature_values, endog=lower_bounds, frac=.1)
+            upper_smoothed = sm.nonparametric.lowess(exog=feature_values, endog=upper_bounds, frac=.1)
+            x = lower_smoothed[:, 0]
+            ax.fill_between(x, upper_smoothed[:, 1], lower_smoothed[:, 1], color='#3594cc', alpha=0.5)
             ax.scatter(feature_values, shap_values, s=5, c='#d8a6a6')
             # ax.scatter(feature_values, upper_bounds, s=5, c='#3594cc')
             ax.set_ylabel(f'Shapley Value - {name}')
@@ -291,6 +316,7 @@ class GeoConformalizedExplainerResults:
 
     def plot_partial_plot_with_individual_intervals(self, max_cols: int = 5, figsize: List[int] = None,
                                                     filename: str = None):
+        plt.style.use('default')
         n_cols = min(self.K, max_cols)
         n_rows = ceil(self.K / n_cols)
 
@@ -355,8 +381,8 @@ class GeoConformalizedExplainer:
         :param feature_names:
         :param is_single_model:
         """
-        self.x_scaler = StandardScaler()
-        self.y_scaler = StandardScaler()
+        self.x_scaler = MinMaxScaler()
+        self.y_scaler = MinMaxScaler()
         self.imputer = SimpleImputer(missing_values=np.nan, strategy='mean')
         self.prediction_f = prediction_f
         self.shap_value_f = shap_value_f
@@ -393,11 +419,6 @@ class GeoConformalizedExplainer:
         # explainer = shap.Explainer(self.prediction_f, self.x_train, feature_names=self.feature_names, algorithm='auto')
         # explanation_result = explainer(x).values
         if self.shap_value_f is None:
-            # batch_size = x.shape[0] // 2
-            # explainer = KernelExplainer(self.prediction_f, x)
-            # explainer.stratify_background_set(20)
-            # explanation_result = explainer.calculate_shap_values(x, verbose=True, outer_batch_size=batch_size, inner_batch_size=batch_size, background_fold_to_use=0)
-            # explanation_result = explanation_result[:, :self.num_variables]
             background = shap.sample(x, 100)
             explainer = shap.KernelExplainer(self.prediction_f, background, feature_names=self.feature_names)
             explanation_result = explainer(x).values
@@ -444,7 +465,7 @@ class GeoConformalizedExplainer:
         :return:
         """
         model = MLPRegressor(hidden_layer_sizes=(1024, 2048, 2048),
-                             max_iter=2000,
+                             max_iter=1000,
                              activation='relu',
                              solver='adam',
                              verbose=False,
@@ -454,7 +475,8 @@ class GeoConformalizedExplainer:
         t = t.reshape(-1, 1)
         x_new = np.hstack((x, t))
         x_new = self.x_scaler.fit_transform(x_new)
-        x_new = self.imputer.fit_transform(x_new)
+        # x_new = self.imputer.fit_transform(x_new)
+        s = self.y_scaler.fit_transform(s)
         model.fit(x_new, s)
         return model
 
@@ -519,7 +541,13 @@ class GeoConformalizedExplainer:
             torch.save(model.state_dict(), f'../data/model_trained.pth')
         return model
 
-    def _predict_explanation_values(self, x: np.ndarray, model: MultipleTargetRegression, device: str) -> np.ndarray:
+    def _predict_explanation_values_single_model(self, x: np.ndarray, model: MLPRegressor) -> np.ndarray:
+        x = self.x_scaler.transform(x)
+        y_pred = model.predict(x)
+        y_pred = self.y_scaler.inverse_transform(y_pred)
+        return y_pred
+
+    def _predict_explanation_values_nn_model(self, x: np.ndarray, model: MultipleTargetRegression, device: str) -> np.ndarray:
         """
         Predict explanation values from input values X and predicted values t.
         :param x:
@@ -576,13 +604,13 @@ class GeoConformalizedExplainer:
         :return:
         """
         regressor = self._fit_explanation_value_predictor_single_model(self.x_train, t_train, s_train)
-        R2s = r2_score(s_test, regressor.predict(self.x_scaler.transform(x_test_new)), multioutput='raw_values')
-        RMSEs = root_mean_squared_error(regressor.predict(self.x_scaler.transform(x_test_new)), s_test,
-                                        multioutput='raw_values')
+        s_test_pred = self._predict_explanation_values_single_model(x_test_new, regressor)
         results = []
         for i in range(self.num_variables):
+            R2 = r2_score(s_test[:, i], s_test_pred[:, i])
+            RMSE = root_mean_squared_error(s_test[:, i], s_test_pred[:, i])
             geocp = GeoConformalSpatialPrediction(
-                predict_f=lambda x_: regressor.predict(self.x_scaler.transform(x_))[:, i],
+                predict_f=lambda x_: self._predict_explanation_values_single_model(x_, regressor)[:, i],
                 miscoverage_level=self.miscoverage_level,
                 bandwidth=self.band_width,
                 coord_calib=self.coord_calib,
@@ -590,7 +618,7 @@ class GeoConformalizedExplainer:
                 X_calib=x_calib_new, y_calib=s_calib[:, i],
                 X_test=x_test_new, y_test=s_test[:, i])
             result_ith_variable = geocp.analyze()
-            results.append([result_ith_variable, R2s[i], RMSEs[i]])
+            results.append([result_ith_variable, R2, RMSE])
         return results
 
     def _explain_variables_in_nn_model(self, s_train: np.ndarray, t_train: np.ndarray, x_test_new: np.ndarray,
@@ -599,13 +627,13 @@ class GeoConformalizedExplainer:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         regressor = self._fit_explanation_value_predictor_nn_model(self.x_train, t_train, s_train, self.x_calib,
                                                                    t_calib, s_calib, device)
-        s_test_pred = self._predict_explanation_values(x_test_new, regressor, device)
-        R2s = r2_score(s_test, s_test_pred, multioutput='raw_values')
-        RMSEs = root_mean_squared_error(s_test, s_test_pred, multioutput='raw_values')
+        s_test_pred = self._predict_explanation_values_nn_model(x_test_new, regressor, device)
         results = []
         for i in range(self.num_variables):
+            R2 = r2_score(s_test[:, i], s_test_pred[:, i])
+            RMSE = root_mean_squared_error(s_test[:, i], s_test_pred[:, i])
             geocp = GeoConformalSpatialPrediction(
-                predict_f=lambda x_: self._predict_explanation_values(x_, regressor, device)[:, i],
+                predict_f=lambda x_: self._predict_explanation_values_nn_model(x_, regressor, device)[:, i],
                 miscoverage_level=self.miscoverage_level,
                 bandwidth=self.band_width,
                 coord_calib=self.coord_calib,
@@ -613,7 +641,7 @@ class GeoConformalizedExplainer:
                 X_calib=x_calib_new, y_calib=s_calib[:, i],
                 X_test=x_test_new, y_test=s_test[:, i])
             result_ith_variable = geocp.analyze()
-            results.append([result_ith_variable, R2s[i], RMSEs[i]])
+            results.append([result_ith_variable, R2, RMSE])
         return results
 
     def uncertainty_aware_explain(self, x_test: Union[np.ndarray, pd.DataFrame],
@@ -632,20 +660,16 @@ class GeoConformalizedExplainer:
         if isinstance(coord_test, pd.DataFrame):
             coord_test = coord_test.values
         t_train = self.prediction_f(self.x_train)
-        print('Training SHAP')
         s_train = self._compute_explanation_values(self.x_train)
         t_calib = self.prediction_f(self.x_calib).reshape(-1, 1)
-        print('Calibrating SHAP')
         s_calib = self._compute_explanation_values(self.x_calib)
         x_calib_new = np.hstack((self.x_calib, t_calib))
-        print('Testing SHAP')
         s_test = self._compute_explanation_values(x_test)
         t_test = self.prediction_f(x_test).reshape(-1, 1)
         x_test_new = np.hstack((x_test, t_test))
         print('Explaining Variables')
         if self.is_single_model:
-            # results = self._explain_variables_in_nn_model(s_train, t_train, x_test_new, s_test, x_calib_new, t_calib,
-            #                                               s_calib, coord_test)
+            # results = self._explain_variables_in_nn_model(s_train, t_train, x_test_new, s_test, x_calib_new, t_calib, s_calib, coord_test)
             results = self._explain_variables_in_single_model(s_train, t_train, x_test_new, s_test, x_calib_new, s_calib, coord_test)
         else:
             results = Parallel(n_jobs=n_jobs)(
