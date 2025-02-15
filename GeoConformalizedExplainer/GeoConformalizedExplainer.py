@@ -360,8 +360,8 @@ class GeoConformalizedExplainer:
         :param feature_names:
         :param is_single_model:
         """
-        self.x_scaler = MinMaxScaler()
-        self.y_scaler = MinMaxScaler()
+        self.x_scaler = StandardScaler()
+        self.y_scaler = StandardScaler()
         self.imputer = SimpleImputer(missing_values=np.nan, strategy='mean')
         self.prediction_f = prediction_f
         self.shap_value_f = shap_value_f
@@ -443,7 +443,7 @@ class GeoConformalizedExplainer:
         :param s:
         :return:
         """
-        model = MLPRegressor(hidden_layer_sizes=(1024, 2048, 1024),
+        model = MLPRegressor(hidden_layer_sizes=(2048, 2048, 2048),
                              max_iter=2000,
                              activation='relu',
                              solver='adam',
@@ -454,13 +454,19 @@ class GeoConformalizedExplainer:
         t = t.reshape(-1, 1)
         x_new = np.hstack((x, t))
         x_new = self.x_scaler.fit_transform(x_new)
-        x_new = self.imputer.fit_transform(x_new)
+        # x_new = self.imputer.fit_transform(x_new)
         s = self.y_scaler.fit_transform(s)
         model.fit(x_new, s)
         return model
 
+    def _predict_explanation_values_single_model(self, x: np.ndarray, model: MLPRegressor) -> np.ndarray:
+        x = self.x_scaler.transform(x)
+        y_pred = model.predict(x)
+        y_pred = self.y_scaler.inverse_transform(y_pred)
+        return y_pred
+
     def _fit_explanation_value_predictor_nn_model(self, x_train: np.ndarray, t_train: np.ndarray, s_train: np.ndarray,
-                                                  x_val: np.ndarray, t_val: np.ndarray, s_val: np.ndarray, device: str,
+                                                  x_val: np.ndarray, t_val: np.ndarray, s_val: np.ndarray, device: torch.device,
                                                   is_save: bool = True) -> MultipleTargetRegression:
         t_train = t_train.reshape(-1, 1)
         x_train_new = np.hstack((x_train, t_train))
@@ -520,13 +526,7 @@ class GeoConformalizedExplainer:
             torch.save(model.state_dict(), f'../data/model_trained.pth')
         return model
 
-    def _predict_explanation_values_single_model(self, x: np.ndarray, model: MLPRegressor) -> np.ndarray:
-        x = self.x_scaler.transform(x)
-        y_pred = model.predict(x)
-        y_pred = self.y_scaler.inverse_transform(y_pred)
-        return y_pred
-
-    def _predict_explanation_values_nn_model(self, x: np.ndarray, model: MultipleTargetRegression, device: str) -> np.ndarray:
+    def _predict_explanation_values_nn_model(self, x: np.ndarray, model: MultipleTargetRegression, device: torch.device) -> np.ndarray:
         """
         Predict explanation values from input values X and predicted values t.
         :param x:
