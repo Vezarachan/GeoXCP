@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "GeoXCP"
+dynamic = ["version"]
+description = 'Geospatial eXplanation Conformal Prediction (GeoXCP)'
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+keywords = []
+authors = [
+  { name = "Xiayin Lou", email = "xiayin.lou@tum.de" },
+]
+
+[tool.setuptools.packages.find]
+include = ["GeoConformalizedExplainer*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "GeoConformalizedExplainer._version.__version__"}

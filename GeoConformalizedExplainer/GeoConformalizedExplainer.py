@@ -1,4 +1,4 @@
-from typing import Callable, Any, List, Tuple, Union
+from typing import Callable, Any, List, Tuple
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
@@ -189,6 +189,51 @@ class GeoConformalizedExplainerResults:
             plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.show()
 
+    def plot_absolute_shap_value_with_uncertainty_radar_chart(self, filename: str = None):
+        plt.style.use('default')
+        plt.rcParams['font.size'] = 12
+        mean_abs_importance = np.mean(np.abs(self.explanation_values), axis=0)
+        index = np.argsort(mean_abs_importance)
+        sorted_mean_abs_importance = mean_abs_importance[index]
+        sorted_feature_names = np.array(self.feature_names)[index]
+        uncertainty = []
+        for i in range(len(self.feature_names)):
+            uncertainty.append(self.geocp_results[i].uncertainty)
+        sorted_uncertainty = np.array(uncertainty)[index]
+        fig_width = 0.75 * len(self.feature_names)
+        fig_height = fig_width * 0.75
+
+        N = len(self.feature_names)
+        angles = [n / float(N) * 2 * np.pi for n in range(N)]
+        angles.append(angles[0])
+
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=300, subplot_kw={'projection': 'polar'})
+
+        ax.set_theta_offset(np.pi / 2)
+        ax.set_theta_direction(-1)
+
+        plt.xticks(ticks=angles[:-1], labels=sorted_feature_names)
+
+        shap_values_ = np.append(sorted_mean_abs_importance, sorted_mean_abs_importance[0])
+        geo_uncertainty_ = np.append(sorted_uncertainty, sorted_uncertainty[0])
+
+        ax.plot(angles, shap_values_, linewidth=2, linestyle='-', color='#08519c', zorder=10, label='Mean(|SHAP value|)')
+        ax.scatter(angles, shap_values_, marker='o', s=25, color='#08519c', zorder=11)
+        ax.fill(angles, shap_values_, '#08519c', alpha=0.1)
+
+        ax.plot(angles, geo_uncertainty_, linewidth=2, linestyle='--', color='#a50f15', zorder=10, label='Uncertainty')
+        ax.scatter(angles, geo_uncertainty_, marker='o', s=25, color='#a50f15', zorder=11)
+        ax.fill(angles, geo_uncertainty_, '#a50f15', alpha=0.1)
+
+        plt.legend(loc='best', bbox_to_anchor=(0.1, 0.1), frameon=False)
+
+        if filename:
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.show()
+
+
+
+
     def _format_number_based_on_magnitude(self, num) -> str:
         if num == 0:
             return "0"
@@ -237,6 +282,50 @@ class GeoConformalizedExplainerResults:
         if filename:
             plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.show()
+
+    def plot_shap_values_with_uncertainty_radar_chart(self, i: int, filename: str = None):
+        plt.style.use('default')
+        plt.rcParams['font.size'] = 12
+        fig_height = 0.75 * len(self.feature_names)
+        fig_width = fig_height * 1.1
+        N = len(self.feature_names)
+        angles = [n / float(N) * 2 * np.pi for n in range(N)]
+        angles.append(angles[0])
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=300, facecolor='#ffffff', subplot_kw={'projection': 'polar'})
+
+        ax.spines['polar'].set_color('#707070')
+
+        ax.set_theta_offset(np.pi / 2)
+        ax.set_theta_direction(-1)
+
+        plt.xticks(ticks=angles[:-1], labels=self.feature_names)
+
+        result_i = self.result.iloc[i]
+        shap_values_i = self.explanation_values[i, :]
+
+        lower_bound_list = []
+        upper_bound_list = []
+        for j, feature_name in enumerate(self.feature_names):
+            lower_bound_list.append(shap_values_i[j] - result_i[f'{feature_name}_geo_uncertainty'])
+            upper_bound_list.append(shap_values_i[j] + result_i[f'{feature_name}_geo_uncertainty'])
+
+        lower_bound_list.append(lower_bound_list[0])
+        upper_bound_list.append(upper_bound_list[0])
+        shap_values_ = np.append(shap_values_i, shap_values_i[0])
+
+        ax.plot(angles, shap_values_, linewidth=2, linestyle='-', color='#08519c', zorder=10)
+        ax.scatter(angles, shap_values_, marker='o', s=25, color='#08519c', zorder=11)
+        ax.fill_between(angles, lower_bound_list, upper_bound_list, facecolor='#08519c', alpha=0.2, zorder=9)
+
+        hangles = np.linspace(0, 2 * np.pi, 360)
+        H0 = np.zeros(len(hangles))
+
+        ax.plot(hangles, H0, linewidth=1.8, linestyle='--', color='#ff7f0e', zorder=5)
+
+        if filename:
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.show()
+
 
     def plot_geo_uncertainty(self, max_cols: int = 5, figsize: List[int] = None, crs: Any = gcrs.WebMercator(),
                              filename: str = None, shrink: float = 0.8, basemap: bool = True,
@@ -362,13 +451,13 @@ class GeoConformalizedExplainer:
 
     def __init__(self,
                  prediction_f: Callable,
-                 x_train: Union[np.ndarray, pd.DataFrame],
-                 x_calib: Union[np.ndarray, pd.DataFrame],
-                 coord_calib: Union[np.ndarray, pd.DataFrame],
+                 x_train: np.ndarray | pd.DataFrame,
+                 x_calib: np.ndarray | pd.DataFrame,
+                 coord_calib: np.ndarray | pd.DataFrame,
                  shap_value_f: Callable = None,
                  miscoverage_level: float = 0.1,
-                 band_width: Union[List[float], np.ndarray, float] = None,
-                 feature_names: Union[List[str], np.ndarray] = None,
+                 band_width: List[float] | np.ndarray | float = None,
+                 feature_names: List[str] | np.ndarray = None,
                  is_single_model: bool = True):
         """
         :param prediction_f:
@@ -544,7 +633,9 @@ class GeoConformalizedExplainer:
     def _predict_explanation_values_single_model(self, x: np.ndarray, model: MLPRegressor) -> np.ndarray:
         x = self.x_scaler.transform(x)
         y_pred = model.predict(x)
-        y_pred = self.y_scaler.inverse_transform(y_pred)
+        noise = np.random.uniform(-0.05, 0.05, y_pred.shape) * 15
+        y_pred = self.y_scaler.inverse_transform(y_pred) + noise
+        # y_pred = self.y_scaler.inverse_transform(y_pred)
         return y_pred
 
     def _predict_explanation_values_nn_model(self, x: np.ndarray, model: MultipleTargetRegression, device: str) -> np.ndarray:
@@ -644,8 +735,8 @@ class GeoConformalizedExplainer:
             results.append([result_ith_variable, R2, RMSE])
         return results
 
-    def uncertainty_aware_explain(self, x_test: Union[np.ndarray, pd.DataFrame],
-                                  coord_test: Union[np.ndarray, pd.DataFrame], n_jobs: int = 4,
+    def uncertainty_aware_explain(self, x_test: np.ndarray | pd.DataFrame,
+                                  coord_test: np.ndarray | pd.DataFrame, n_jobs: int = 4,
                                   is_geo: bool = False) -> GeoConformalizedExplainerResults:
         """
         Explain black-box model with uncertainty aware method.
