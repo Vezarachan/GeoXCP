@@ -28,6 +28,9 @@ import torch.nn.init as init
 
 
 class GeoConformalizedExplainerResults:
+    '''
+    GeoXCP ResultSet
+    '''
     def __init__(self, explanation: np.ndarray,
                  geocp_results: List[GeoConformalResults],
                  regression_r2: np.ndarray,
