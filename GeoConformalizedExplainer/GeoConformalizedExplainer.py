@@ -128,30 +128,6 @@ class GeoConformalizedExplainerResults:
         df.index = self.feature_names
         return df
 
-    # def plot_absolute_shap_value_with_uncertainty(self, filename: str = None):
-    #     plt.style.use('default')
-    #     plt.rcParams['font.size'] = 12
-    #     mean_abs_importance = np.mean(np.abs(self.explanation_values), axis=0)
-    #     index = np.argsort(mean_abs_importance)
-    #     sorted_mean_abs_importance = mean_abs_importance[index]
-    #     sorted_feature_names = np.array(self.feature_names)[index]
-    #     uncertainty = []
-    #     for i in range(len(self.feature_names)):
-    #         uncertainty.append(self.geocp_results[i].uncertainty)
-    #     sorted_uncertainty = np.array(uncertainty)[index]
-    #     fig, axes = plt.subplots(ncols=2, sharey=True, figsize=(10, 10))
-    #     axes[0].barh(sorted_feature_names, sorted_mean_abs_importance, align='center', color='#ff0d57')
-    #     axes[1].barh(sorted_feature_names, sorted_uncertainty, align='center', color='#1e88e5')
-    #     axes[0].set(title='mean(|SHAP Value|)')
-    #     axes[1].set(title='Uncertainty')
-    #     axes[0].invert_xaxis()
-    #     axes[0].set(yticks=np.arange(len(sorted_feature_names)), yticklabels=sorted_feature_names)
-    #     axes[0].yaxis.tick_right()
-    #     fig.tight_layout()
-    #     if filename:
-    #         plt.savefig(filename, dpi=300, bbox_inches='tight')
-    #     plt.show()
-
     def plot_absolute_shap_value_with_uncertainty(self, filename: str = None):
         plt.style.use('default')
         plt.rcParams['font.size'] = 12
@@ -445,10 +421,9 @@ class GeoConformalizedExplainerResults:
 
 class GeoConformalizedExplainer:
     """
-    Spatial Explanation under Uncertainty
+    GeoXCP: **Geo**spatial e**X**planation **C**onformal **P**rediction
     Geographically Conformalized Explanations for Black-Box Models
     """
-
     def __init__(self,
                  prediction_f: Callable,
                  x_train: np.ndarray | pd.DataFrame,
